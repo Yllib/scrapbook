@@ -1,0 +1,16 @@
+# node
+node_modules
+
+# build artifacts
+apps/**/dist
+workers/**/dist
+coverage
+
+# env
+.env
+.env.local
+
+# editor
+.vscode
+.idea
+.DS_Store
