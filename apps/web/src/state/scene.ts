@@ -398,14 +398,43 @@ export const useSceneStore = create<SceneState>((set, get) => ({
   },
 }))
 
-export function getNodeAABB(node: SceneNode): AABB {
+export function getNodeCorners(node: SceneNode): Vec2[] {
   const halfWidth = node.size.width / 2
   const halfHeight = node.size.height / 2
+  const corners: Vec2[] = [
+    { x: -halfWidth, y: -halfHeight },
+    { x: halfWidth, y: -halfHeight },
+    { x: halfWidth, y: halfHeight },
+    { x: -halfWidth, y: halfHeight },
+  ]
+  const angle = node.rotation ?? 0
+  const cos = Math.cos(angle)
+  const sin = Math.sin(angle)
+  return corners.map((corner) => ({
+    x: node.position.x + corner.x * cos - corner.y * sin,
+    y: node.position.y + corner.x * sin + corner.y * cos,
+  }))
+}
+
+export function getNodeAABB(node: SceneNode): AABB {
+  const corners = getNodeCorners(node)
+  let minX = Number.POSITIVE_INFINITY
+  let minY = Number.POSITIVE_INFINITY
+  let maxX = Number.NEGATIVE_INFINITY
+  let maxY = Number.NEGATIVE_INFINITY
+
+  for (const corner of corners) {
+    if (corner.x < minX) minX = corner.x
+    if (corner.x > maxX) maxX = corner.x
+    if (corner.y < minY) minY = corner.y
+    if (corner.y > maxY) maxY = corner.y
+  }
+
   return {
-    minX: node.position.x - halfWidth,
-    minY: node.position.y - halfHeight,
-    maxX: node.position.x + halfWidth,
-    maxY: node.position.y + halfHeight,
+    minX,
+    minY,
+    maxX,
+    maxY,
   }
 }
 

@@ -24,6 +24,7 @@ describe('selectionOverlay utilities', () => {
       expect(geometry?.width).toBeGreaterThan(0)
       expect(geometry?.height).toBeGreaterThan(0)
       expect(geometry?.rotationHandle).toBeDefined()
+      expect(geometry?.rotation).toBeCloseTo(0)
     })
 
     it('computes bounding geometry for two nodes', () => {
@@ -58,6 +59,17 @@ describe('selectionOverlay utilities', () => {
       expect(geometry).not.toBeNull()
       expect(geometry?.width).toBeGreaterThan(0)
       expect(geometry?.height).toBeGreaterThan(0)
+    })
+
+    it('averages rotation across selected nodes', () => {
+      const nodes: SceneNode[] = [
+        makeNode({ id: 'a', rotation: Math.PI / 4 }),
+        makeNode({ id: 'b', rotation: Math.PI / 4 }),
+      ]
+
+      const geometry = calculateGroupSelectionOverlay(nodes)
+      expect(geometry).not.toBeNull()
+      expect(geometry?.rotation).toBeCloseTo(Math.PI / 4)
     })
   })
 

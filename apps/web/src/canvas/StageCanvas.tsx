@@ -3,8 +3,6 @@ import { Application, Container, Graphics, TilingSprite, Texture } from 'pixi.js
 import {
   useSceneStore,
   screenToWorld,
-  containsPoint,
-  getNodeAABB,
   type SceneNode,
   type Vec2,
   type AABB,
@@ -86,8 +84,73 @@ function distanceBetween(a: Vec2, b: Vec2) {
   return Math.hypot(a.x - b.x, a.y - b.y)
 }
 
-function pointInBounds(point: Vec2, bounds: { minX: number; minY: number; maxX: number; maxY: number }) {
-  return point.x >= bounds.minX && point.x <= bounds.maxX && point.y >= bounds.minY && point.y <= bounds.maxY
+function rotateVector(vec: Vec2, angle: number): Vec2 {
+  const cos = Math.cos(angle)
+  const sin = Math.sin(angle)
+  return {
+    x: vec.x * cos - vec.y * sin,
+    y: vec.x * sin + vec.y * cos,
+  }
+}
+
+function toWorld(overlay: SelectionOverlayGeometry, offset: Vec2): Vec2 {
+  const rotated = rotateVector(offset, overlay.rotation)
+  return {
+    x: overlay.center.x + rotated.x,
+    y: overlay.center.y + rotated.y,
+  }
+}
+
+function toLocal(overlay: SelectionOverlayGeometry, worldPoint: Vec2): Vec2 {
+  const rel = {
+    x: worldPoint.x - overlay.center.x,
+    y: worldPoint.y - overlay.center.y,
+  }
+  return rotateVector(rel, -overlay.rotation)
+}
+
+function isPointInsideOverlay(overlay: SelectionOverlayGeometry, worldPoint: Vec2) {
+  const local = toLocal(overlay, worldPoint)
+  return Math.abs(local.x) <= overlay.width / 2 && Math.abs(local.y) <= overlay.height / 2
+}
+
+function nodeContainsPoint(node: SceneNode, point: Vec2) {
+  const angle = node.rotation ?? 0
+  const cos = Math.cos(-angle)
+  const sin = Math.sin(-angle)
+  const dx = point.x - node.position.x
+  const dy = point.y - node.position.y
+  const localX = dx * cos - dy * sin
+  const localY = dx * sin + dy * cos
+  const halfWidth = node.size.width / 2
+  const halfHeight = node.size.height / 2
+  return Math.abs(localX) <= halfWidth && Math.abs(localY) <= halfHeight
+}
+
+const createPointerCaptureHelpers = (view: HTMLCanvasElement) => {
+  const setCapture = (pointerId: number) => {
+    try {
+      if (!view.hasPointerCapture?.(pointerId)) {
+        view.setPointerCapture(pointerId)
+      }
+    } catch (error) {
+      // ignore
+    }
+  }
+
+  const releaseCapture = (pointerId: number) => {
+    try {
+      if (view.hasPointerCapture?.(pointerId)) {
+        view.releasePointerCapture(pointerId)
+      } else {
+        view.releasePointerCapture(pointerId)
+      }
+    } catch (error) {
+      // ignore
+    }
+  }
+
+  return { setCapture, releaseCapture }
 }
 
 export function StageCanvas() {
@@ -180,6 +243,8 @@ function configureScene(app: Application, host: HTMLDivElement, view: HTMLCanvas
   app.stage.addChild(world)
   app.stage.addChild(overlay)
 
+  const { setCapture, releaseCapture } = createPointerCaptureHelpers(view)
+
   const groupSelection = new Graphics()
   groupSelection.visible = false
   groupSelection.eventMode = 'none'
@@ -211,6 +276,7 @@ function configureScene(app: Application, host: HTMLDivElement, view: HTMLCanvas
     lastScaleDistance: 0,
     lastAngle: 0,
     activeHandle: null as HandleType | null,
+    transformStarted: false,
   }
 
   const touchPointers = new Map<number, Vec2>()
@@ -260,7 +326,7 @@ function configureScene(app: Application, host: HTMLDivElement, view: HTMLCanvas
         view.style.cursor = 'grabbing'
         return
       case 'transform-scale':
-        view.style.cursor = 'nwse-resize'
+        view.style.cursor = pointer.activeHandle === 'edge' ? 'ns-resize' : 'nwse-resize'
         return
       case 'transform-rotate':
         view.style.cursor = 'grabbing'
@@ -328,6 +394,7 @@ function configureScene(app: Application, host: HTMLDivElement, view: HTMLCanvas
     groupSelection.visible = true
     groupSelection.clear()
     groupSelection.position.set(overlayGeometry.center.x, overlayGeometry.center.y)
+    groupSelection.rotation = overlayGeometry.rotation
 
     groupSelection
       .rect(
@@ -356,25 +423,23 @@ function configureScene(app: Application, host: HTMLDivElement, view: HTMLCanvas
 
   const detectHandleAtPoint = (worldPoint: Vec2, overlayGeometry: SelectionOverlayGeometry): HandleType | null => {
     const sizing = calculateSelectionHandleSizing(world.scale.x)
-    const center = overlayGeometry.center
-    const toWorld = (offset: Vec2) => ({ x: center.x + offset.x, y: center.y + offset.y })
     const cornerThreshold = sizing.cornerRadius * HANDLE_HIT_PADDING
     const edgeThreshold = sizing.edgeRadius * HANDLE_HIT_PADDING
     const rotationThreshold = sizing.rotationRadius * HANDLE_HIT_PADDING
 
     for (const corner of overlayGeometry.corners) {
-      if (distanceBetween(worldPoint, toWorld(corner)) <= cornerThreshold) {
+      if (distanceBetween(worldPoint, toWorld(overlayGeometry, corner)) <= cornerThreshold) {
         return 'corner'
       }
     }
 
     for (const edge of overlayGeometry.edges) {
-      if (distanceBetween(worldPoint, toWorld(edge)) <= edgeThreshold) {
+      if (distanceBetween(worldPoint, toWorld(overlayGeometry, edge)) <= edgeThreshold) {
         return 'edge'
       }
     }
 
-    if (distanceBetween(worldPoint, toWorld(overlayGeometry.rotationHandle)) <= rotationThreshold) {
+    if (distanceBetween(worldPoint, toWorld(overlayGeometry, overlayGeometry.rotationHandle)) <= rotationThreshold) {
       return 'rotate'
     }
 
@@ -568,7 +633,7 @@ function configureScene(app: Application, host: HTMLDivElement, view: HTMLCanvas
   }
 
   const handleTouchPointerDown = (event: PointerEvent) => {
-    view.setPointerCapture(event.pointerId)
+    setCapture(event.pointerId)
     const point = getScreenPoint(event)
     touchPointers.set(event.pointerId, point)
     if (touchPointers.size >= 2) {
@@ -587,7 +652,7 @@ function configureScene(app: Application, host: HTMLDivElement, view: HTMLCanvas
 
   const handleTouchPointerUp = (event: PointerEvent) => {
     if (!touchPointers.has(event.pointerId)) return
-    view.releasePointerCapture(event.pointerId)
+    releaseCapture(event.pointerId)
     touchPointers.delete(event.pointerId)
     if (touchPointers.size >= 2) {
       resetTouchGestureReference()
@@ -632,7 +697,7 @@ function configureScene(app: Application, host: HTMLDivElement, view: HTMLCanvas
     const nodes = storeApi.getState().nodes
     for (let index = nodes.length - 1; index >= 0; index -= 1) {
       const node = nodes[index]
-      if (containsPoint(getNodeAABB(node), worldPoint)) {
+      if (nodeContainsPoint(node, worldPoint)) {
         return node
       }
     }
@@ -657,7 +722,7 @@ function configureScene(app: Application, host: HTMLDivElement, view: HTMLCanvas
         return
       }
 
-      if (pointInBounds(worldPoint, currentOverlay.bounds)) {
+      if (isPointInsideOverlay(currentOverlay, worldPoint)) {
         const hitNode = getNodeUnderPoint(worldPoint)
         hoveredNodeId = hitNode?.id ?? null
         updateCursor()
@@ -673,22 +738,38 @@ function configureScene(app: Application, host: HTMLDivElement, view: HTMLCanvas
   }
 
   const handlePointerDown = (event: PointerEvent) => {
-    if (event.pointerType === 'touch') {
+    const isTouch = event.pointerType === 'touch'
+    const screenPoint = getScreenPoint(event)
+    const worldPoint = screenToWorld(screenPoint, currentWorldTransform())
+
+    if (isTouch) {
       handleTouchPointerDown(event)
-      return
+      if (touchPointers.size >= 2) {
+        return
+      }
     }
+
     if (pointer.pointerId !== null) return
-    view.setPointerCapture(event.pointerId)
+    if (!isTouch) {
+      setCapture(event.pointerId)
+    }
     pointer.pointerId = event.pointerId
-    pointer.startScreen = getScreenPoint(event)
-    pointer.lastScreen = pointer.startScreen
-    pointer.lastWorld = screenToWorld(pointer.startScreen, currentWorldTransform())
+    pointer.startScreen = screenPoint
+    pointer.lastScreen = screenPoint
+    pointer.lastWorld = worldPoint
     pointer.hasDragged = false
     pointer.additive = event.shiftKey
     pointer.toggle = event.metaKey || event.ctrlKey
     pointer.activeHandle = null
+    pointer.transformStarted = false
 
-    const shouldPan = keyboard.spacePressed || event.button === 1 || event.button === 2
+    const overlayGeometry = currentOverlay
+    const state = storeApi.getState()
+    const handle = overlayGeometry ? detectHandleAtPoint(worldPoint, overlayGeometry) : null
+    const insideOverlay = overlayGeometry ? isPointInsideOverlay(overlayGeometry, worldPoint) : false
+    const hitNode = getNodeUnderPoint(worldPoint)
+
+    const shouldPan = !isTouch && (keyboard.spacePressed || event.button === 1 || event.button === 2)
     if (shouldPan) {
       pointer.mode = 'panning'
       if (event.button === 2) {
@@ -698,23 +779,20 @@ function configureScene(app: Application, host: HTMLDivElement, view: HTMLCanvas
       return
     }
 
-    if (event.button !== 0) {
+    if (event.button !== 0 && !isTouch) {
       pointer.mode = 'idle'
       updateCursor()
       return
     }
 
-    const overlayGeometry = currentOverlay
-    const state = storeApi.getState()
-    const worldPoint = pointer.lastWorld
-
     if (overlayGeometry && state.selectedIds.length > 0) {
-      const handle = detectHandleAtPoint(worldPoint, overlayGeometry)
       if (handle === 'rotate') {
-        state.startTransformSession()
         pointer.mode = 'transform-rotate'
         pointer.transformCenter = { ...overlayGeometry.center }
-        pointer.lastAngle = Math.atan2(worldPoint.y - overlayGeometry.center.y, worldPoint.x - overlayGeometry.center.x)
+        pointer.lastAngle = Math.atan2(
+          worldPoint.y - overlayGeometry.center.y,
+          worldPoint.x - overlayGeometry.center.x,
+        )
         pointer.hasDragged = true
         pointer.activeHandle = 'rotate'
         hoveredHandle = 'rotate'
@@ -724,7 +802,6 @@ function configureScene(app: Application, host: HTMLDivElement, view: HTMLCanvas
       }
 
       if (handle === 'corner' || handle === 'edge') {
-        state.startTransformSession()
         pointer.mode = 'transform-scale'
         pointer.transformCenter = { ...overlayGeometry.center }
         pointer.lastScaleDistance = Math.max(
@@ -739,9 +816,7 @@ function configureScene(app: Application, host: HTMLDivElement, view: HTMLCanvas
         return
       }
 
-      const hitNode = getNodeUnderPoint(worldPoint)
-      if (pointInBounds(worldPoint, overlayGeometry.bounds) && state.selectedIds.length > 0) {
-        state.startTransformSession()
+      if (insideOverlay && state.selectedIds.length > 0) {
         pointer.mode = 'transform-translate'
         pointer.transformCenter = { ...overlayGeometry.center }
         pointer.hasDragged = true
@@ -750,8 +825,9 @@ function configureScene(app: Application, host: HTMLDivElement, view: HTMLCanvas
         hoveredNodeId = null
         updateCursor()
         return
-      } else if (hitNode && state.selectedIds.includes(hitNode.id)) {
-        state.startTransformSession()
+      }
+
+      if (hitNode && state.selectedIds.includes(hitNode.id)) {
         pointer.mode = 'transform-translate'
         pointer.transformCenter = { ...overlayGeometry.center }
         pointer.hasDragged = true
@@ -768,9 +844,12 @@ function configureScene(app: Application, host: HTMLDivElement, view: HTMLCanvas
   }
 
   const handlePointerMove = (event: PointerEvent) => {
-    if (event.pointerType === 'touch') {
+    const isTouch = event.pointerType === 'touch'
+    if (isTouch) {
       handleTouchPointerMove(event)
-      return
+      if (touchPointers.size >= 2) {
+        return
+      }
     }
     if (pointer.pointerId === null) {
       updateHoverState(event)
@@ -790,6 +869,10 @@ function configureScene(app: Application, host: HTMLDivElement, view: HTMLCanvas
           y: worldPoint.y - pointer.lastWorld.y,
         }
         if (Math.abs(deltaWorld.x) > 0 || Math.abs(deltaWorld.y) > 0) {
+          if (!pointer.transformStarted) {
+            storeApi.getState().startTransformSession()
+            pointer.transformStarted = true
+          }
           storeApi.getState().translateSelected(deltaWorld)
           pointer.lastWorld = worldPoint
         }
@@ -798,7 +881,11 @@ function configureScene(app: Application, host: HTMLDivElement, view: HTMLCanvas
       case 'transform-scale': {
         const distance = Math.max(distanceBetween(worldPoint, pointer.transformCenter), 1e-4)
         const ratio = distance / Math.max(pointer.lastScaleDistance, 1e-4)
-        if (ratio !== 1) {
+        if (Math.abs(ratio - 1) > 1e-6) {
+          if (!pointer.transformStarted) {
+            storeApi.getState().startTransformSession()
+            pointer.transformStarted = true
+          }
           storeApi.getState().scaleSelected(pointer.transformCenter, ratio)
           pointer.lastScaleDistance = distance
         }
@@ -807,7 +894,11 @@ function configureScene(app: Application, host: HTMLDivElement, view: HTMLCanvas
       case 'transform-rotate': {
         const angle = Math.atan2(worldPoint.y - pointer.transformCenter.y, worldPoint.x - pointer.transformCenter.x)
         const deltaAngle = angle - pointer.lastAngle
-        if (Math.abs(deltaAngle) > 0) {
+        if (Math.abs(deltaAngle) > 1e-6) {
+          if (!pointer.transformStarted) {
+            storeApi.getState().startTransformSession()
+            pointer.transformStarted = true
+          }
           storeApi.getState().rotateSelected(pointer.transformCenter, deltaAngle)
           pointer.lastAngle = angle
         }
@@ -816,6 +907,8 @@ function configureScene(app: Application, host: HTMLDivElement, view: HTMLCanvas
       default:
         break
     }
+
+    pointer.lastWorld = worldPoint
 
     switch (pointer.mode) {
       case 'panning': {
@@ -884,6 +977,7 @@ function configureScene(app: Application, host: HTMLDivElement, view: HTMLCanvas
     pointer.activeHandle = null
     pointer.lastScaleDistance = 0
     pointer.lastAngle = 0
+    pointer.transformStarted = false
     hoveredHandle = null
     hoveredNodeId = null
     marquee.visible = false
@@ -892,19 +986,21 @@ function configureScene(app: Application, host: HTMLDivElement, view: HTMLCanvas
   }
 
   const handlePointerUp = (event: PointerEvent) => {
-    if (event.pointerType === 'touch') {
+    const isTouch = event.pointerType === 'touch'
+    if (isTouch) {
       handleTouchPointerUp(event)
-      return
     }
     if (pointer.pointerId !== event.pointerId) return
-    view.releasePointerCapture(event.pointerId)
+    releaseCapture(event.pointerId)
 
     if (
       pointer.mode === 'transform-translate' ||
       pointer.mode === 'transform-scale' ||
       pointer.mode === 'transform-rotate'
     ) {
-      storeApi.getState().commitTransformSession()
+      if (pointer.transformStarted) {
+        storeApi.getState().commitTransformSession()
+      }
       clearPointerState()
       updateHoverState(event)
       return
@@ -931,18 +1027,20 @@ function configureScene(app: Application, host: HTMLDivElement, view: HTMLCanvas
   }
 
   const handlePointerCancel = (event: PointerEvent) => {
-    if (event.pointerType === 'touch') {
+    const isTouch = event.pointerType === 'touch'
+    if (isTouch) {
       handleTouchPointerUp(event)
-      return
     }
     if (pointer.pointerId !== event.pointerId) return
-    view.releasePointerCapture(event.pointerId)
+    releaseCapture(event.pointerId)
     if (
       pointer.mode === 'transform-translate' ||
       pointer.mode === 'transform-scale' ||
       pointer.mode === 'transform-rotate'
     ) {
-      storeApi.getState().commitTransformSession()
+      if (pointer.transformStarted) {
+        storeApi.getState().commitTransformSession()
+      }
     }
     clearPointerState()
     updateHoverState(event)
