@@ -7,16 +7,26 @@ export interface SelectionOverlayGeometry {
   height: number
   corners: Vec2[]
   edges: Vec2[]
+  rotationHandle: Vec2
+  bounds: {
+    minX: number
+    minY: number
+    maxX: number
+    maxY: number
+  }
 }
 
 export interface SelectionHandleSizing {
   strokeWidth: number
   cornerRadius: number
   edgeRadius: number
+  rotationRadius: number
 }
 
+const ROTATION_HANDLE_OFFSET = 40
+
 export function calculateGroupSelectionOverlay(nodes: SceneNode[]): SelectionOverlayGeometry | null {
-  if (nodes.length <= 1) return null
+  if (nodes.length === 0) return null
 
   let minX = Number.POSITIVE_INFINITY
   let minY = Number.POSITIVE_INFINITY
@@ -59,12 +69,26 @@ export function calculateGroupSelectionOverlay(nodes: SceneNode[]): SelectionOve
     { x: -halfWidth, y: 0 },
   ]
 
+  const maxDimension = Math.max(width, height)
+  const rotationHandleOffset = Math.max(ROTATION_HANDLE_OFFSET, maxDimension * 0.1)
+  const rotationHandle: Vec2 = {
+    x: 0,
+    y: -halfHeight - rotationHandleOffset,
+  }
+
   return {
     center,
     width,
     height,
     corners,
     edges,
+    rotationHandle,
+    bounds: {
+      minX,
+      minY,
+      maxX,
+      maxY,
+    },
   }
 }
 
@@ -73,9 +97,11 @@ export function calculateSelectionHandleSizing(worldScale: number): SelectionHan
   const strokeWidth = Math.max(1.5, 1.5 / safeScale)
   const cornerRadius = Math.max(6, 6 / safeScale)
   const edgeRadius = cornerRadius * 0.75
+  const rotationRadius = cornerRadius
   return {
     strokeWidth,
     cornerRadius,
     edgeRadius,
+    rotationRadius,
   }
 }

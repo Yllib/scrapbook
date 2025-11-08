@@ -14,9 +14,16 @@ const makeNode = (overrides: Partial<SceneNode>): SceneNode => ({
 
 describe('selectionOverlay utilities', () => {
   describe('calculateGroupSelectionOverlay', () => {
-    it('returns null when fewer than two nodes are provided', () => {
+    it('returns null when no nodes are provided', () => {
       expect(calculateGroupSelectionOverlay([])).toBeNull()
-      expect(calculateGroupSelectionOverlay([makeNode({ id: 'a' })])).toBeNull()
+    })
+
+    it('computes geometry for a single node', () => {
+      const geometry = calculateGroupSelectionOverlay([makeNode({ id: 'a' })])
+      expect(geometry).not.toBeNull()
+      expect(geometry?.width).toBeGreaterThan(0)
+      expect(geometry?.height).toBeGreaterThan(0)
+      expect(geometry?.rotationHandle).toBeDefined()
     })
 
     it('computes bounding geometry for two nodes', () => {
@@ -38,6 +45,7 @@ describe('selectionOverlay utilities', () => {
         { x: 155, y: 50 },
         { x: -155, y: 50 },
       ])
+      expect(geometry?.rotationHandle.y ?? 0).toBeLessThan(-50)
     })
 
     it('returns stable geometry when nodes overlap completely', () => {
@@ -59,6 +67,7 @@ describe('selectionOverlay utilities', () => {
       expect(sizing.strokeWidth).toBeCloseTo(1.5)
       expect(sizing.cornerRadius).toBeCloseTo(6)
       expect(sizing.edgeRadius).toBeCloseTo(4.5)
+      expect(sizing.rotationRadius).toBeCloseTo(6)
     })
 
     it('shrinks handles as scale increases', () => {

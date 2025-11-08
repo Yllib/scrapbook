@@ -14,6 +14,7 @@ const resetSceneStore = () => {
     lastSelectedId: null,
     world: { position: { x: 0, y: 0 }, scale: 1 },
     viewport: { width: 0, height: 0 },
+    history: { past: [], future: [], recording: false },
   })
 }
 
@@ -98,5 +99,90 @@ describe('scene store', () => {
     const backToScreen = worldToScreen(worldPoint, state.world)
     expect(backToScreen.x).toBeCloseTo(screenPoint.x, 6)
     expect(backToScreen.y).toBeCloseTo(screenPoint.y, 6)
+  })
+
+  it('translates selection with undo/redo support', () => {
+    const state = useSceneStore.getState()
+    const a = createNode({ id: 'node-a', position: { x: 0, y: 0 }, size: { width: 100, height: 80 } })
+    const b = createNode({ id: 'node-b', position: { x: 100, y: 0 }, size: { width: 120, height: 80 } })
+
+    state.setSelection([a.id, b.id])
+    state.startTransformSession()
+    state.translateSelected({ x: 10, y: -5 })
+    state.translateSelected({ x: 15, y: 5 })
+    state.commitTransformSession()
+
+    let nodes = useSceneStore.getState().nodes
+    const nodeA = nodes.find((node) => node.id === a.id)!
+    const nodeB = nodes.find((node) => node.id === b.id)!
+
+    expect(nodeA.position).toEqual({ x: 25, y: 0 })
+    expect(nodeB.position).toEqual({ x: 125, y: 0 })
+
+    state.undo()
+    nodes = useSceneStore.getState().nodes
+    const undoA = nodes.find((node) => node.id === a.id)!
+    const undoB = nodes.find((node) => node.id === b.id)!
+    expect(undoA.position).toEqual({ x: 0, y: 0 })
+    expect(undoB.position).toEqual({ x: 100, y: 0 })
+
+    state.redo()
+    nodes = useSceneStore.getState().nodes
+    const redoA = nodes.find((node) => node.id === a.id)!
+    const redoB = nodes.find((node) => node.id === b.id)!
+    expect(redoA.position).toEqual({ x: 25, y: 0 })
+    expect(redoB.position).toEqual({ x: 125, y: 0 })
+  })
+
+  it('scales selection relative to the transform center', () => {
+    const state = useSceneStore.getState()
+    const a = createNode({ id: 'node-a', position: { x: 0, y: 0 }, size: { width: 100, height: 100 } })
+    const b = createNode({ id: 'node-b', position: { x: 100, y: 0 }, size: { width: 100, height: 50 } })
+
+    state.setSelection([a.id, b.id])
+    state.startTransformSession()
+    state.scaleSelected({ x: 50, y: 0 }, 2)
+    state.commitTransformSession()
+
+    const nodes = useSceneStore.getState().nodes
+    const nodeA = nodes.find((node) => node.id === a.id)!
+    const nodeB = nodes.find((node) => node.id === b.id)!
+
+    expect(nodeA.position.x).toBeCloseTo(-50)
+    expect(nodeA.size.width).toBeCloseTo(200)
+    expect(nodeB.position.x).toBeCloseTo(150)
+    expect(nodeB.size.height).toBeCloseTo(100)
+  })
+
+  it('rotates selection around the transform center', () => {
+    const state = useSceneStore.getState()
+    const a = createNode({ id: 'node-a', position: { x: 0, y: 0 }, size: { width: 80, height: 80 } })
+    const b = createNode({ id: 'node-b', position: { x: 100, y: 0 }, size: { width: 80, height: 80 } })
+
+    state.setSelection([a.id, b.id])
+    state.startTransformSession()
+    state.rotateSelected({ x: 50, y: 0 }, Math.PI / 2)
+    state.commitTransformSession()
+
+    const nodes = useSceneStore.getState().nodes
+    const nodeA = nodes.find((node) => node.id === a.id)!
+    const nodeB = nodes.find((node) => node.id === b.id)!
+
+    expect(nodeA.position.x).toBeCloseTo(50, 5)
+    expect(nodeA.position.y).toBeCloseTo(-50, 5)
+    expect(nodeA.rotation).toBeCloseTo(Math.PI / 2, 5)
+    expect(nodeB.position.x).toBeCloseTo(50, 5)
+    expect(nodeB.position.y).toBeCloseTo(50, 5)
+    expect(nodeB.rotation).toBeCloseTo(Math.PI / 2, 5)
+
+    state.undo()
+    const originalA = useSceneStore.getState().nodes.find((node) => node.id === a.id)!
+    const originalB = useSceneStore.getState().nodes.find((node) => node.id === b.id)!
+    expect(originalA.position.x).toBeCloseTo(0)
+    expect(originalA.position.y).toBeCloseTo(0)
+    expect(originalA.rotation).toBeCloseTo(0)
+    expect(originalB.position.x).toBeCloseTo(100)
+    expect(originalB.position.y).toBeCloseTo(0)
+    expect(originalB.rotation).toBeCloseTo(0)
   })
 })

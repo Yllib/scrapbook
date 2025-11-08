@@ -39,6 +39,20 @@ export interface Viewport {
 }
 
 const DEFAULT_RECT_SIZE: Size2D = { width: 160, height: 120 }
+const HISTORY_LIMIT = 200
+const MIN_NODE_SIZE = 2
+
+interface SceneSnapshot {
+  nodes: SceneNode[]
+  selectedIds: string[]
+  world: WorldTransform
+}
+
+interface HistoryState {
+  past: SceneSnapshot[]
+  future: SceneSnapshot[]
+  recording: boolean
+}
 
 interface SceneState {
   nodes: SceneNode[]
@@ -55,6 +69,14 @@ interface SceneState {
   updateWorldTransform: (transform: Partial<WorldTransform>) => void
   updateViewport: (viewport: Partial<Viewport>) => void
   getWorldCenter: () => Vec2
+  startTransformSession: () => void
+  commitTransformSession: () => void
+  translateSelected: (delta: Vec2, options?: { record?: boolean }) => void
+  scaleSelected: (center: Vec2, scaleFactor: number, options?: { record?: boolean }) => void
+  rotateSelected: (center: Vec2, deltaRadians: number, options?: { record?: boolean }) => void
+  undo: () => void
+  redo: () => void
+  history: HistoryState
 }
 
 const unique = (values: string[]) => {
@@ -71,6 +93,37 @@ const clampSelectionToNodes = (ids: string[], nodes: SceneNode[]) => {
   return unique(ids.filter((id) => existing.has(id)))
 }
 
+const cloneNode = (node: SceneNode): SceneNode => ({
+  ...node,
+  position: { ...node.position },
+  size: { ...node.size },
+})
+
+const cloneNodes = (nodes: SceneNode[]) => nodes.map((node) => cloneNode(node))
+
+const cloneWorld = (world: WorldTransform): WorldTransform => ({
+  position: { ...world.position },
+  scale: world.scale,
+})
+
+const createSnapshot = (state: SceneState): SceneSnapshot => ({
+  nodes: cloneNodes(state.nodes),
+  selectedIds: [...state.selectedIds],
+  world: cloneWorld(state.world),
+})
+
+const pushSnapshot = (history: HistoryState, snapshot: SceneSnapshot, recording?: boolean) => {
+  const past = [...history.past, snapshot]
+  if (past.length > HISTORY_LIMIT) {
+    past.shift()
+  }
+  return {
+    past,
+    future: [],
+    recording: recording ?? history.recording,
+  }
+}
+
 export const useSceneStore = create<SceneState>((set, get) => ({
   nodes: [],
   selectedIds: [],
@@ -82,6 +135,11 @@ export const useSceneStore = create<SceneState>((set, get) => ({
   viewport: {
     width: 0,
     height: 0,
+  },
+  history: {
+    past: [],
+    future: [],
+    recording: false,
   },
   createRectangleNode: (overrides = {}) => {
     const id = overrides.id ?? crypto.randomUUID()
@@ -98,11 +156,13 @@ export const useSceneStore = create<SceneState>((set, get) => ({
     }
 
     set((prev) => {
+      const history = !prev.history.recording ? pushSnapshot(prev.history, createSnapshot(prev)) : prev.history
       const nodes = [...prev.nodes, node]
       return {
         nodes,
         selectedIds: [id],
         lastSelectedId: id,
+        history,
       }
     })
 
@@ -121,6 +181,9 @@ export const useSceneStore = create<SceneState>((set, get) => ({
         nodes,
         selectedIds,
         lastSelectedId,
+        history: !prev.history.recording
+          ? pushSnapshot(prev.history, createSnapshot(prev))
+          : prev.history,
       }
     })
   },
@@ -170,7 +233,7 @@ export const useSceneStore = create<SceneState>((set, get) => ({
   updateWorldTransform: (transform) =>
     set((prev) => ({
       world: {
-        position: transform.position ?? prev.world.position,
+        position: transform.position ? { ...transform.position } : { ...prev.world.position },
         scale: transform.scale ?? prev.world.scale,
       },
     })),
@@ -181,6 +244,144 @@ export const useSceneStore = create<SceneState>((set, get) => ({
         height: viewport.height ?? prev.viewport.height,
       },
     })),
+  startTransformSession: () =>
+    set((prev) => {
+      if (prev.selectedIds.length === 0) return prev
+      if (prev.history.recording) return prev
+      const history = pushSnapshot(prev.history, createSnapshot(prev), true)
+      return { history }
+    }),
+  commitTransformSession: () =>
+    set((prev) => {
+      if (!prev.history.recording) return prev
+      return {
+        history: {
+          past: prev.history.past,
+          future: prev.history.future,
+          recording: false,
+        },
+      }
+    }),
+  translateSelected: (delta, options) =>
+    set((prev) => {
+      if (prev.selectedIds.length === 0) return prev
+      if (delta.x === 0 && delta.y === 0) return prev
+      const selectedSet = new Set(prev.selectedIds)
+      const nodes = prev.nodes.map((node) =>
+        selectedSet.has(node.id)
+          ? {
+              ...node,
+              position: {
+                x: node.position.x + delta.x,
+                y: node.position.y + delta.y,
+              },
+            }
+          : node,
+      )
+      const shouldRecord = options?.record ?? false
+      const history = shouldRecord && !prev.history.recording
+        ? pushSnapshot(prev.history, createSnapshot(prev))
+        : prev.history
+      return { nodes, history }
+    }),
+  scaleSelected: (center, scaleFactor, options) =>
+    set((prev) => {
+      if (prev.selectedIds.length === 0) return prev
+      if (!Number.isFinite(scaleFactor) || scaleFactor === 0) return prev
+      const selectedSet = new Set(prev.selectedIds)
+      const safeScale = Math.max(scaleFactor, 1e-4)
+      const nodes = prev.nodes.map((node) => {
+        if (!selectedSet.has(node.id)) return node
+        const offsetX = node.position.x - center.x
+        const offsetY = node.position.y - center.y
+        const newX = center.x + offsetX * safeScale
+        const newY = center.y + offsetY * safeScale
+        const width = Math.max(node.size.width * safeScale, MIN_NODE_SIZE)
+        const height = Math.max(node.size.height * safeScale, MIN_NODE_SIZE)
+        return {
+          ...node,
+          position: { x: newX, y: newY },
+          size: { width, height },
+        }
+      })
+      const shouldRecord = options?.record ?? false
+      const history = shouldRecord && !prev.history.recording
+        ? pushSnapshot(prev.history, createSnapshot(prev))
+        : prev.history
+      return { nodes, history }
+    }),
+  rotateSelected: (center, deltaRadians, options) =>
+    set((prev) => {
+      if (prev.selectedIds.length === 0) return prev
+      if (!Number.isFinite(deltaRadians) || deltaRadians === 0) return prev
+      const selectedSet = new Set(prev.selectedIds)
+      const cos = Math.cos(deltaRadians)
+      const sin = Math.sin(deltaRadians)
+      const nodes = prev.nodes.map((node) => {
+        if (!selectedSet.has(node.id)) return node
+        const offsetX = node.position.x - center.x
+        const offsetY = node.position.y - center.y
+        const rotatedX = offsetX * cos - offsetY * sin
+        const rotatedY = offsetX * sin + offsetY * cos
+        return {
+          ...node,
+          position: {
+            x: center.x + rotatedX,
+            y: center.y + rotatedY,
+          },
+          rotation: normalizeAngle(node.rotation + deltaRadians),
+        }
+      })
+      const shouldRecord = options?.record ?? false
+      const history = shouldRecord && !prev.history.recording
+        ? pushSnapshot(prev.history, createSnapshot(prev))
+        : prev.history
+      return { nodes, history }
+    }),
+  undo: () =>
+    set((prev) => {
+      if (prev.history.past.length === 0) return prev
+      const snapshot = prev.history.past[prev.history.past.length - 1]
+      const newPast = prev.history.past.slice(0, -1)
+      const currentSnapshot = createSnapshot(prev)
+      const future = [...prev.history.future, currentSnapshot]
+      if (future.length > HISTORY_LIMIT) {
+        future.shift()
+      }
+      return {
+        nodes: cloneNodes(snapshot.nodes),
+        selectedIds: [...snapshot.selectedIds],
+        lastSelectedId: snapshot.selectedIds.at(-1) ?? null,
+        world: cloneWorld(snapshot.world),
+        history: {
+          past: newPast,
+          future,
+          recording: false,
+        },
+      }
+    }),
+  redo: () =>
+    set((prev) => {
+      if (prev.history.future.length === 0) return prev
+      const snapshot = prev.history.future[prev.history.future.length - 1]
+      const newFuture = prev.history.future.slice(0, -1)
+      const currentSnapshot = createSnapshot(prev)
+      const past = [...prev.history.past, currentSnapshot]
+      if (past.length > HISTORY_LIMIT) {
+        past.shift()
+      }
+      return {
+        nodes: cloneNodes(snapshot.nodes),
+        selectedIds: [...snapshot.selectedIds],
+        lastSelectedId: snapshot.selectedIds.at(-1) ?? null,
+        world: cloneWorld(snapshot.world),
+        history: {
+          past,
+          future: newFuture,
+          recording: false,
+        },
+      }
+    }),
   getWorldCenter: () => {
     const { viewport, world } = get()
     if (viewport.width === 0 || viewport.height === 0) {
@@ -255,4 +456,17 @@ function getSafeScale(scale: number) {
     return scale < 0 ? -MIN_SAFE_SCALE : MIN_SAFE_SCALE
   }
   return scale
+}
+
+const TWO_PI = Math.PI * 2
+
+function normalizeAngle(angle: number) {
+  if (!Number.isFinite(angle)) return 0
+  let result = angle % TWO_PI
+  if (result > Math.PI) {
+    result -= TWO_PI
+  } else if (result < -Math.PI) {
+    result += TWO_PI
+  }
+  return result
 }
