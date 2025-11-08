@@ -217,16 +217,18 @@ export function intersectsAABB(a: AABB, b: AABB) {
 }
 
 export function screenToWorld(point: Vec2, transform: WorldTransform): Vec2 {
+  const scale = getSafeScale(transform.scale)
   return {
-    x: (point.x - transform.position.x) / transform.scale,
-    y: (point.y - transform.position.y) / transform.scale,
+    x: (point.x - transform.position.x) / scale,
+    y: (point.y - transform.position.y) / scale,
   }
 }
 
 export function worldToScreen(point: Vec2, transform: WorldTransform): Vec2 {
+  const scale = getSafeScale(transform.scale)
   return {
-    x: point.x * transform.scale + transform.position.x,
-    y: point.y * transform.scale + transform.position.y,
+    x: point.x * scale + transform.position.x,
+    y: point.y * scale + transform.position.y,
   }
 }
 
@@ -243,4 +245,14 @@ export function normalizeAABB(a: AABB): AABB {
   const minY = Math.min(a.minY, a.maxY)
   const maxY = Math.max(a.minY, a.maxY)
   return { minX, minY, maxX, maxY }
+}
+
+const MIN_SAFE_SCALE = 1e-9
+
+function getSafeScale(scale: number) {
+  if (scale === 0) return MIN_SAFE_SCALE
+  if (Math.abs(scale) < MIN_SAFE_SCALE) {
+    return scale < 0 ? -MIN_SAFE_SCALE : MIN_SAFE_SCALE
+  }
+  return scale
 }

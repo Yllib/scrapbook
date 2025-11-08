@@ -11,8 +11,11 @@ import {
 } from '../state/scene'
 
 const DPR_CAP = 1.5
-const MIN_ZOOM = 0.1
-const MAX_ZOOM = 8
+const MIN_ZOOM = 1e-6
+const MAX_ZOOM = Number.POSITIVE_INFINITY
+const NORMALIZE_MIN_SCALE = 0.25
+const NORMALIZE_MAX_SCALE = 4
+const NORMALIZE_FACTOR = 2
 const GRID_SIZE = 64
 const DRAG_THRESHOLD = 4
 const SELECTION_COLOR = 0x38bdf8
@@ -166,27 +169,42 @@ function configureScene(app: Application, host: HTMLDivElement, view: HTMLCanvas
   const nodeVisuals = new Map<string, NodeVisual>()
   let selectedIdSet = new Set(storeApi.getState().selectedIds)
 
-  const pointer: {
-    pointerId: number | null
-    mode: PointerMode
-    startScreen: Vec2
-    lastScreen: Vec2
+const pointer: {
+  pointerId: number | null
+  mode: PointerMode
+  startScreen: Vec2
+  lastScreen: Vec2
     additive: boolean
     toggle: boolean
-    hasDragged: boolean
-  } = {
-    pointerId: null,
-    mode: 'idle',
-    startScreen: { x: 0, y: 0 },
-    lastScreen: { x: 0, y: 0 },
-    additive: false,
-    toggle: false,
-    hasDragged: false,
-  }
+  hasDragged: boolean
+} = {
+  pointerId: null,
+  mode: 'idle',
+  startScreen: { x: 0, y: 0 },
+  lastScreen: { x: 0, y: 0 },
+  additive: false,
+  toggle: false,
+  hasDragged: false,
+}
 
-  const keyboard = {
-    spacePressed: false,
-  }
+const touchPointers = new Map<number, Vec2>()
+let touchGesture:
+  | {
+      initialScale: number
+      initialDistance: number
+      initialMidpointWorld: Vec2
+    }
+  | null = null
+
+const keyboard = {
+  spacePressed: false,
+}
+
+const scaleNodeDimensions = (node: SceneNode, factor: number): SceneNode => ({
+  ...node,
+  position: { x: node.position.x * factor, y: node.position.y * factor },
+  size: { width: node.size.width * factor, height: node.size.height * factor },
+})
 
   const currentWorldTransform = () => ({
     position: { x: world.position.x, y: world.position.y },
@@ -310,6 +328,137 @@ function configureScene(app: Application, host: HTMLDivElement, view: HTMLCanvas
     }
   }
 
+  const getFirstTwoTouchPoints = () => {
+  const iterator = touchPointers.values()
+  const first = iterator.next()
+  const second = iterator.next()
+  if (first.done || second.done) return null
+  return [first.value, second.value] as const
+}
+
+  const normalizeWorldScale = () => {
+    let adjusted = false
+
+    const shrinkScene = () => {
+      world.scale.set(world.scale.x / NORMALIZE_FACTOR)
+      storeApi.setState((prev) => ({
+        nodes: prev.nodes.map((node) => scaleNodeDimensions(node, NORMALIZE_FACTOR)),
+        world: {
+          position: { ...prev.world.position },
+          scale: world.scale.x,
+        },
+      }))
+      adjusted = true
+    }
+
+    const growScene = () => {
+      world.scale.set(world.scale.x * NORMALIZE_FACTOR)
+      storeApi.setState((prev) => ({
+        nodes: prev.nodes.map((node) => scaleNodeDimensions(node, 1 / NORMALIZE_FACTOR)),
+        world: {
+          position: { ...prev.world.position },
+          scale: world.scale.x,
+        },
+      }))
+      adjusted = true
+    }
+
+    while (world.scale.x > NORMALIZE_MAX_SCALE) {
+      shrinkScene()
+    }
+    while (world.scale.x < NORMALIZE_MIN_SCALE) {
+      growScene()
+    }
+
+    if (adjusted) {
+      redrawSelection()
+      if (touchPointers.size >= 2) {
+        resetTouchGestureReference()
+      }
+    }
+  }
+
+  const resetTouchGestureReference = () => {
+    const pair = getFirstTwoTouchPoints()
+    if (!pair) {
+      touchGesture = null
+      return
+    }
+    const [a, b] = pair
+    const midpoint = {
+      x: (a.x + b.x) / 2,
+      y: (a.y + b.y) / 2,
+    }
+    const distance = Math.hypot(b.x - a.x, b.y - a.y)
+    touchGesture = {
+      initialScale: world.scale.x,
+      initialDistance: Math.max(distance, 1),
+      initialMidpointWorld: screenToWorld(midpoint, currentWorldTransform()),
+    }
+  }
+
+  const applyTouchGesture = () => {
+    if (!touchGesture) return
+    const pair = getFirstTwoTouchPoints()
+    if (!pair) return
+    const [a, b] = pair
+    const midpoint = {
+      x: (a.x + b.x) / 2,
+      y: (a.y + b.y) / 2,
+    }
+    const distance = Math.max(Math.hypot(b.x - a.x, b.y - a.y), 1)
+
+    const targetScale = clamp(
+      touchGesture.initialScale * (distance / touchGesture.initialDistance),
+      MIN_ZOOM,
+      MAX_ZOOM,
+    )
+    world.scale.set(targetScale)
+    world.position.set(
+      midpoint.x - touchGesture.initialMidpointWorld.x * targetScale,
+      midpoint.y - touchGesture.initialMidpointWorld.y * targetScale,
+    )
+    normalizeWorldScale()
+    syncWorldTransform()
+    redrawSelection()
+
+    if (touchPointers.size >= 2) {
+      resetTouchGestureReference()
+    } else {
+      touchGesture = null
+    }
+  }
+
+  const handleTouchPointerDown = (event: PointerEvent) => {
+    view.setPointerCapture(event.pointerId)
+    const point = getScreenPoint(event)
+    touchPointers.set(event.pointerId, point)
+    if (touchPointers.size >= 2) {
+      resetTouchGestureReference()
+      applyTouchGesture()
+    }
+  }
+
+  const handleTouchPointerMove = (event: PointerEvent) => {
+    if (!touchPointers.has(event.pointerId)) return
+    touchPointers.set(event.pointerId, getScreenPoint(event))
+    if (touchPointers.size >= 2) {
+      applyTouchGesture()
+    }
+  }
+
+  const handleTouchPointerUp = (event: PointerEvent) => {
+    if (!touchPointers.has(event.pointerId)) return
+    view.releasePointerCapture(event.pointerId)
+    touchPointers.delete(event.pointerId)
+    if (touchPointers.size >= 2) {
+      resetTouchGestureReference()
+    } else {
+      touchGesture = null
+      syncWorldTransform()
+    }
+  }
+
   const beginMarquee = () => {
     pointer.mode = 'marquee'
     marquee.visible = true
@@ -341,6 +490,10 @@ function configureScene(app: Application, host: HTMLDivElement, view: HTMLCanvas
   }
 
   const handlePointerDown = (event: PointerEvent) => {
+    if (event.pointerType === 'touch') {
+      handleTouchPointerDown(event)
+      return
+    }
     if (pointer.pointerId !== null) return
     view.setPointerCapture(event.pointerId)
     pointer.pointerId = event.pointerId
@@ -369,6 +522,10 @@ function configureScene(app: Application, host: HTMLDivElement, view: HTMLCanvas
   }
 
   const handlePointerMove = (event: PointerEvent) => {
+    if (event.pointerType === 'touch') {
+      handleTouchPointerMove(event)
+      return
+    }
     if (pointer.pointerId !== event.pointerId) return
     const screenPoint = getScreenPoint(event)
     const dx = screenPoint.x - pointer.lastScreen.x
@@ -453,6 +610,10 @@ function configureScene(app: Application, host: HTMLDivElement, view: HTMLCanvas
   }
 
   const handlePointerUp = (event: PointerEvent) => {
+    if (event.pointerType === 'touch') {
+      handleTouchPointerUp(event)
+      return
+    }
     if (pointer.pointerId !== event.pointerId) return
     view.releasePointerCapture(event.pointerId)
 
@@ -475,6 +636,10 @@ function configureScene(app: Application, host: HTMLDivElement, view: HTMLCanvas
   }
 
   const handlePointerCancel = (event: PointerEvent) => {
+    if (event.pointerType === 'touch') {
+      handleTouchPointerUp(event)
+      return
+    }
     if (pointer.pointerId !== event.pointerId) return
     view.releasePointerCapture(event.pointerId)
     clearPointerState()
@@ -493,6 +658,7 @@ function configureScene(app: Application, host: HTMLDivElement, view: HTMLCanvas
 
     world.scale.set(targetScale)
     world.position.set(cursorX - worldCursorX * targetScale, cursorY - worldCursorY * targetScale)
+    normalizeWorldScale()
     syncWorldTransform()
     redrawSelection()
   }
