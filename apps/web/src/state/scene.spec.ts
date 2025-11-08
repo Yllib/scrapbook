@@ -1,5 +1,11 @@
 import { beforeEach, describe, expect, it } from 'vitest'
-import { useSceneStore, type SceneNode, type AABB } from './scene'
+import {
+  useSceneStore,
+  screenToWorld,
+  worldToScreen,
+  type SceneNode,
+  type AABB,
+} from './scene'
 
 const resetSceneStore = () => {
   useSceneStore.setState({
@@ -77,5 +83,20 @@ describe('scene store', () => {
     const nextSelected = useSceneStore.getState().selectedIds
     expect(new Set(nextSelected)).toEqual(new Set([a.id, b.id]))
     expect(nextSelected).not.toContain(c.id)
+  })
+
+  it('handles world transforms with extremely small scales', () => {
+    const state = useSceneStore.getState()
+    state.updateViewport({ width: 1000, height: 1000 })
+    state.updateWorldTransform({ position: { x: 500, y: 500 }, scale: 1e-12 })
+
+    const screenPoint = { x: 510, y: 520 }
+    const worldPoint = screenToWorld(screenPoint, state.world)
+    expect(Number.isFinite(worldPoint.x)).toBe(true)
+    expect(Number.isFinite(worldPoint.y)).toBe(true)
+
+    const backToScreen = worldToScreen(worldPoint, state.world)
+    expect(backToScreen.x).toBeCloseTo(screenPoint.x, 6)
+    expect(backToScreen.y).toBeCloseTo(screenPoint.y, 6)
   })
 })

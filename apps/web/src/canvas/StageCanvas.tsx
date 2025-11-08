@@ -9,6 +9,10 @@ import {
   type Vec2,
   type AABB,
 } from '../state/scene'
+import {
+  calculateGroupSelectionOverlay,
+  calculateSelectionHandleSizing,
+} from './selectionOverlay'
 
 const DPR_CAP = 1.5
 const MIN_ZOOM = 1e-6
@@ -157,6 +161,12 @@ function configureScene(app: Application, host: HTMLDivElement, view: HTMLCanvas
   app.stage.addChild(world)
   app.stage.addChild(overlay)
 
+  const groupSelection = new Graphics()
+  groupSelection.visible = false
+  groupSelection.eventMode = 'none'
+  groupSelection.zIndex = 1_000_000
+  world.addChild(groupSelection)
+
   const marquee = new Graphics()
   marquee.visible = false
   overlay.addChild(marquee)
@@ -169,42 +179,44 @@ function configureScene(app: Application, host: HTMLDivElement, view: HTMLCanvas
   const nodeVisuals = new Map<string, NodeVisual>()
   let selectedIdSet = new Set(storeApi.getState().selectedIds)
 
-const pointer: {
-  pointerId: number | null
-  mode: PointerMode
-  startScreen: Vec2
-  lastScreen: Vec2
+  const pointer: {
+    pointerId: number | null
+    mode: PointerMode
+    startScreen: Vec2
+    lastScreen: Vec2
     additive: boolean
     toggle: boolean
-  hasDragged: boolean
-} = {
-  pointerId: null,
-  mode: 'idle',
-  startScreen: { x: 0, y: 0 },
-  lastScreen: { x: 0, y: 0 },
-  additive: false,
-  toggle: false,
-  hasDragged: false,
-}
+    hasDragged: boolean
+  } = {
+    pointerId: null,
+    mode: 'idle',
+    startScreen: { x: 0, y: 0 },
+    lastScreen: { x: 0, y: 0 },
+    additive: false,
+    toggle: false,
+    hasDragged: false,
+  }
 
-const touchPointers = new Map<number, Vec2>()
-let touchGesture:
-  | {
-      initialScale: number
-      initialDistance: number
-      initialMidpointWorld: Vec2
-    }
-  | null = null
+  const touchPointers = new Map<number, Vec2>()
+  let touchGesture:
+    | {
+        initialScale: number
+        initialDistance: number
+        initialMidpointWorld: Vec2
+      }
+    | null = null
 
-const keyboard = {
-  spacePressed: false,
-}
+  let hoveredNodeId: string | null = null
 
-const scaleNodeDimensions = (node: SceneNode, factor: number): SceneNode => ({
-  ...node,
-  position: { x: node.position.x * factor, y: node.position.y * factor },
-  size: { width: node.size.width * factor, height: node.size.height * factor },
-})
+  const keyboard = {
+    spacePressed: false,
+  }
+
+  const scaleNodeDimensions = (node: SceneNode, factor: number): SceneNode => ({
+    ...node,
+    position: { x: node.position.x * factor, y: node.position.y * factor },
+    size: { width: node.size.width * factor, height: node.size.height * factor },
+  })
 
   const currentWorldTransform = () => ({
     position: { x: world.position.x, y: world.position.y },
@@ -228,8 +240,16 @@ const scaleNodeDimensions = (node: SceneNode, factor: number): SceneNode => ({
       view.style.cursor = 'grabbing'
       return
     }
+    if (pointer.mode === 'marquee') {
+      view.style.cursor = 'crosshair'
+      return
+    }
     if (keyboard.spacePressed) {
       view.style.cursor = 'grab'
+      return
+    }
+    if (hoveredNodeId) {
+      view.style.cursor = 'pointer'
       return
     }
     view.style.cursor = 'default'
@@ -245,11 +265,41 @@ const scaleNodeDimensions = (node: SceneNode, factor: number): SceneNode => ({
     )
   }
 
+  const updateGroupSelectionOverlay = () => {
+    const selectedNodes = storeApi
+      .getState()
+      .nodes.filter((node) => selectedIdSet.has(node.id))
+    const overlayGeometry = calculateGroupSelectionOverlay(selectedNodes)
+    if (!overlayGeometry) {
+      groupSelection.visible = false
+      groupSelection.clear()
+      return
+    }
+
+    const sizing = calculateSelectionHandleSizing(world.scale.x)
+
+    groupSelection.visible = true
+    groupSelection.clear()
+    groupSelection.position.set(overlayGeometry.center.x, overlayGeometry.center.y)
+
+    groupSelection.rect(-overlayGeometry.width / 2, -overlayGeometry.height / 2, overlayGeometry.width, overlayGeometry.height)
+    groupSelection.stroke({ color: 0xffffff, alpha: 0.65, width: sizing.strokeWidth })
+
+    overlayGeometry.corners.forEach((corner) => {
+      groupSelection.circle(corner.x, corner.y, sizing.cornerRadius).fill({ color: 0x38bdf8, alpha: 0.95 })
+    })
+
+    overlayGeometry.edges.forEach((edge) => {
+      groupSelection.circle(edge.x, edge.y, sizing.edgeRadius).fill({ color: 0x0ea5e9, alpha: 0.85 })
+    })
+  }
+
   const redrawSelection = () => {
     const scale = world.scale.x
     nodeVisuals.forEach((visual, id) => {
       drawSelectionOverlay(visual, scale, selectedIdSet.has(id))
     })
+    updateGroupSelectionOverlay()
   }
 
   const upsertNodeVisual = (node: SceneNode, index: number) => {
@@ -329,12 +379,12 @@ const scaleNodeDimensions = (node: SceneNode, factor: number): SceneNode => ({
   }
 
   const getFirstTwoTouchPoints = () => {
-  const iterator = touchPointers.values()
-  const first = iterator.next()
-  const second = iterator.next()
-  if (first.done || second.done) return null
-  return [first.value, second.value] as const
-}
+    const iterator = touchPointers.values()
+    const first = iterator.next()
+    const second = iterator.next()
+    if (first.done || second.done) return null
+    return [first.value, second.value] as const
+  }
 
   const normalizeWorldScale = () => {
     let adjusted = false
@@ -375,6 +425,7 @@ const scaleNodeDimensions = (node: SceneNode, factor: number): SceneNode => ({
       if (touchPointers.size >= 2) {
         resetTouchGestureReference()
       }
+      syncWorldTransform()
     }
   }
 
@@ -463,6 +514,7 @@ const scaleNodeDimensions = (node: SceneNode, factor: number): SceneNode => ({
     pointer.mode = 'marquee'
     marquee.visible = true
     marquee.clear()
+    updateCursor()
   }
 
   const updateMarquee = (current: Vec2) => {
@@ -489,6 +541,29 @@ const scaleNodeDimensions = (node: SceneNode, factor: number): SceneNode => ({
     storeApi.getState().marqueeSelect(box, additive)
   }
 
+  const getNodeUnderPoint = (worldPoint: Vec2): SceneNode | null => {
+    const nodes = storeApi.getState().nodes
+    for (let index = nodes.length - 1; index >= 0; index -= 1) {
+      const node = nodes[index]
+      if (containsPoint(getNodeAABB(node), worldPoint)) {
+        return node
+      }
+    }
+    return null
+  }
+
+  const updateHoverState = (event: PointerEvent) => {
+    if (event.pointerType === 'touch') return
+    if (pointer.mode === 'panning' || pointer.mode === 'marquee') return
+    const screenPoint = getScreenPoint(event)
+    const worldPoint = screenToWorld(screenPoint, currentWorldTransform())
+    const hitNode = getNodeUnderPoint(worldPoint)
+    const hitId = hitNode?.id ?? null
+    if (hoveredNodeId === hitId) return
+    hoveredNodeId = hitId
+    updateCursor()
+  }
+
   const handlePointerDown = (event: PointerEvent) => {
     if (event.pointerType === 'touch') {
       handleTouchPointerDown(event)
@@ -496,6 +571,7 @@ const scaleNodeDimensions = (node: SceneNode, factor: number): SceneNode => ({
     }
     if (pointer.pointerId !== null) return
     view.setPointerCapture(event.pointerId)
+    hoveredNodeId = null
     pointer.pointerId = event.pointerId
     pointer.startScreen = getScreenPoint(event)
     pointer.lastScreen = pointer.startScreen
@@ -513,17 +589,23 @@ const scaleNodeDimensions = (node: SceneNode, factor: number): SceneNode => ({
 
     if (event.button !== 0) {
       pointer.mode = 'idle'
+      updateCursor()
       return
     }
 
     pointer.mode = 'click-select'
     pointer.additive = event.shiftKey
     pointer.toggle = event.metaKey || event.ctrlKey
+    updateCursor()
   }
 
   const handlePointerMove = (event: PointerEvent) => {
     if (event.pointerType === 'touch') {
       handleTouchPointerMove(event)
+      return
+    }
+    if (pointer.pointerId === null) {
+      updateHoverState(event)
       return
     }
     if (pointer.pointerId !== event.pointerId) return
@@ -563,15 +645,7 @@ const scaleNodeDimensions = (node: SceneNode, factor: number): SceneNode => ({
 
   const performClickSelection = (event: PointerEvent, worldPoint: Vec2) => {
     const state = storeApi.getState()
-    const nodes = state.nodes
-    let hit: SceneNode | null = null
-    for (let index = nodes.length - 1; index >= 0; index -= 1) {
-      const node = nodes[index]
-      if (containsPoint(getNodeAABB(node), worldPoint)) {
-        hit = node
-        break
-      }
-    }
+    const hit = getNodeUnderPoint(worldPoint)
 
     const hasModifier = event.shiftKey || event.metaKey || event.ctrlKey
 
@@ -604,6 +678,7 @@ const scaleNodeDimensions = (node: SceneNode, factor: number): SceneNode => ({
     pointer.hasDragged = false
     pointer.additive = false
     pointer.toggle = false
+    hoveredNodeId = null
     marquee.visible = false
     marquee.clear()
     updateCursor()
@@ -619,6 +694,7 @@ const scaleNodeDimensions = (node: SceneNode, factor: number): SceneNode => ({
 
     if (pointer.mode === 'panning') {
       clearPointerState()
+      updateHoverState(event)
       return
     }
 
@@ -633,6 +709,7 @@ const scaleNodeDimensions = (node: SceneNode, factor: number): SceneNode => ({
     }
 
     clearPointerState()
+    updateHoverState(event)
   }
 
   const handlePointerCancel = (event: PointerEvent) => {
@@ -643,6 +720,15 @@ const scaleNodeDimensions = (node: SceneNode, factor: number): SceneNode => ({
     if (pointer.pointerId !== event.pointerId) return
     view.releasePointerCapture(event.pointerId)
     clearPointerState()
+    updateHoverState(event)
+  }
+
+  const handlePointerLeave = (event: PointerEvent) => {
+    if (event.pointerType === 'touch') return
+    if (pointer.pointerId !== null) return
+    if (hoveredNodeId === null) return
+    hoveredNodeId = null
+    updateCursor()
   }
 
   const handleWheel = (event: WheelEvent) => {
@@ -694,6 +780,7 @@ const scaleNodeDimensions = (node: SceneNode, factor: number): SceneNode => ({
   view.addEventListener('pointermove', handlePointerMove)
   view.addEventListener('pointerup', handlePointerUp)
   view.addEventListener('pointercancel', handlePointerCancel)
+  view.addEventListener('pointerleave', handlePointerLeave)
   view.addEventListener('wheel', handleWheel, { passive: false })
   view.addEventListener('contextmenu', (event) => event.preventDefault())
   window.addEventListener('keydown', handleKeyDown)
@@ -705,6 +792,7 @@ const scaleNodeDimensions = (node: SceneNode, factor: number): SceneNode => ({
     view.removeEventListener('pointermove', handlePointerMove)
     view.removeEventListener('pointerup', handlePointerUp)
     view.removeEventListener('pointercancel', handlePointerCancel)
+    view.removeEventListener('pointerleave', handlePointerLeave)
     view.removeEventListener('wheel', handleWheel)
     window.removeEventListener('keydown', handleKeyDown)
     window.removeEventListener('keyup', handleKeyUp)

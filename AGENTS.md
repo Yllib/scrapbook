@@ -27,6 +27,7 @@
 - API tests use Jest with `--runInBand`. Unit specs live next to source files (`*.spec.ts`).
 - Frontend and tiler currently stub tests; add Vite/Vitest or worker-specific suites before shipping new features.
 - Keep new tests deterministic and prefer dependency injection over global state for easier mocking.
+- At the end of each milestone, run `pnpm --filter web test` (from Windows) and `pnpm --filter web typecheck` to guard against regressions.
 
 ## Commit & Pull Request Guidelines
 - No formal history exists yet; adopt Conventional Commits (`feat: add camera controls`, `fix: clamp zoom bounds`).
