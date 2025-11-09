@@ -1,0 +1,13 @@
+**/node_modules
+**/dist
+**/.vite
+**/.turbo
+**/.next
+.git
+.gitignore
+Dockerfile*
+.dockerignore
+.env*
+coverage
+.vscode
+.idea

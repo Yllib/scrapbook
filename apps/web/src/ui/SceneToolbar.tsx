@@ -1,5 +1,6 @@
-import { useCallback, useMemo, type ChangeEvent } from 'react'
+import { useCallback, useMemo, useRef, useState, type ChangeEvent, type ChangeEventHandler } from 'react'
 import { useSceneStore } from '../state/scene'
+import { uploadAsset, waitForAssetReady } from '../api/assets'
 
 const TRIANGLE_POINTS = [
   { x: 0, y: -0.5 },
@@ -14,7 +15,9 @@ const DEFAULT_ELLIPSE = { width: 200, height: 200 }
 const DEFAULT_TRIANGLE = { width: 220, height: 220 }
 
 export function SceneToolbar() {
+  const [uploading, setUploading] = useState(false)
   const createShape = useSceneStore((state) => state.createShapeNode)
+  const createImage = useSceneStore((state) => state.createImageNode)
   const nodeCount = useSceneStore((state) => state.nodes.length)
   const nodes = useSceneStore((state) => state.nodes)
   const selectedIds = useSceneStore((state) => state.selectedIds)
@@ -33,6 +36,7 @@ export function SceneToolbar() {
   const bringToFront = useSceneStore((state) => state.bringSelectedToFront)
   const sendToBack = useSceneStore((state) => state.sendSelectedToBack)
   const worldScale = useSceneStore((state) => state.world.scale)
+  const uploadInputRef = useRef<HTMLInputElement>(null)
 
   const firstSelected = useMemo(() => {
     if (selectedIds.length === 0) return null
@@ -94,6 +98,47 @@ export function SceneToolbar() {
       },
     )
   }, [createShape, zoomFactor])
+
+  const handleUploadClick = useCallback(() => {
+    uploadInputRef.current?.click()
+  }, [])
+
+  const handleUploadFile: ChangeEventHandler<HTMLInputElement> = useCallback(
+    async (event) => {
+      const file = event.target.files?.[0]
+      if (!file) return
+      setUploading(true)
+      try {
+        const { assetId } = await uploadAsset(file)
+        const meta = await waitForAssetReady(assetId)
+        const intrinsicWidth = meta.width ?? 512
+        const intrinsicHeight = meta.height ?? 512
+        createImage(
+          {
+            assetId,
+            intrinsicSize: {
+              width: intrinsicWidth,
+              height: intrinsicHeight,
+            },
+          },
+          {
+            name: file.name || 'Image',
+            size: {
+              width: intrinsicWidth * zoomFactor,
+              height: intrinsicHeight * zoomFactor,
+            },
+          },
+        )
+      } catch (error) {
+        console.error('Failed to upload image asset', error)
+        alert('Failed to upload image asset. Please try again.')
+      } finally {
+        setUploading(false)
+        event.target.value = ''
+      }
+    },
+    [createImage, zoomFactor],
+  )
 
   const handleFillChange = useCallback(
     (event: ChangeEvent<HTMLInputElement>) => {
@@ -166,6 +211,21 @@ export function SceneToolbar() {
         <button type="button" className="toolbar-button" onClick={handleAddTriangle}>
           Triangle
         </button>
+        <button
+          type="button"
+          className="toolbar-button"
+          onClick={handleUploadClick}
+          disabled={uploading}
+        >
+          {uploading ? 'Uploading…' : 'Upload Image'}
+        </button>
+        <input
+          ref={uploadInputRef}
+          type="file"
+          accept="image/*"
+          onChange={handleUploadFile}
+          style={{ display: 'none' }}
+        />
       </div>
       <div className="toolbar-section toolbar-colors" aria-label="Selection styling">
         <label className="color-control">

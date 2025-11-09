@@ -1,0 +1,111 @@
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider        = "prisma-client-js"
+  previewFeatures = ["fullTextSearchPostgres"]
+}
+
+enum AssetStatus {
+  PENDING
+  PROCESSING
+  READY
+  FAILED
+}
+
+enum AssetFormat {
+  ORIGINAL
+  AVIF
+  WEBP
+  JPEG
+}
+
+model Project {
+  id        String    @id @default(cuid())
+  name      String
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  assets    Asset[]
+  ops       Operation[]
+}
+
+model Asset {
+  id            String       @id @default(cuid())
+  projectId     String?
+  project       Project?     @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  filename      String
+  mimeType      String
+  size          Int
+  checksum      String
+  width         Int?
+  height        Int?
+  status        AssetStatus  @default(PENDING)
+  failureReason String?
+  storageKey    String
+  createdAt     DateTime     @default(now())
+  updatedAt     DateTime     @updatedAt
+  variants      AssetVariant[]
+  tiles         AssetTile[]
+  operations    Operation[]
+
+  @@index([projectId])
+  @@index([status])
+  @@unique([checksum, projectId])
+}
+
+model AssetVariant {
+  id        String      @id @default(cuid())
+  assetId   String
+  asset     Asset       @relation(fields: [assetId], references: [id], onDelete: Cascade)
+  format    AssetFormat
+  width     Int
+  height    Int
+  size      Int
+  mimeType  String
+  storageKey String
+  createdAt DateTime    @default(now())
+
+  @@index([assetId, format])
+}
+
+model AssetTile {
+  id        String   @id @default(cuid())
+  assetId   String
+  asset     Asset    @relation(fields: [assetId], references: [id], onDelete: Cascade)
+  z         Int
+  x         Int
+  y         Int
+  size      Int
+  mimeType  String
+  storageKey String
+  createdAt DateTime @default(now())
+
+  @@unique([assetId, z, x, y])
+  @@index([assetId, z])
+}
+
+model Operation {
+  id        String   @id @default(cuid())
+  projectId String?
+  project   Project? @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  assetId   String?
+  asset     Asset?   @relation(fields: [assetId], references: [id], onDelete: Cascade)
+  type      String
+  payload   Json
+  status    OperationStatus @default(PENDING)
+  error     String?
+  processedAt DateTime?
+  createdAt DateTime @default(now())
+
+  @@index([projectId])
+  @@index([assetId])
+}
+
+enum OperationStatus {
+  PENDING
+  PROCESSING
+  COMPLETED
+  FAILED
+}

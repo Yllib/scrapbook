@@ -10,7 +10,7 @@
     "typecheck": "pnpm -r typecheck"
   },
   "devDependencies": {
-    "@types/node": "20",
+    "@types/node": "22",
     "typescript": "5.9.3"
   },
   "packageManager": "pnpm@9.12.2"

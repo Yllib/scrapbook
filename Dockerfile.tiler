@@ -1,0 +1,26 @@
+# syntax=docker/dockerfile:1
+FROM node:24-bullseye AS build
+WORKDIR /app
+
+COPY . .
+
+RUN corepack enable \
+  && corepack prepare pnpm@9.12.2 --activate \
+  && pnpm install --frozen-lockfile
+
+RUN pnpm --filter api exec prisma generate --schema prisma/schema.prisma
+RUN pnpm --filter @scrapbook/tiler build
+RUN pnpm --filter @scrapbook/tiler deploy --prod /app/tiler-deploy
+
+FROM node:24-bullseye AS run
+WORKDIR /worker
+ENV NODE_ENV=production
+
+COPY --from=build /app/tiler-deploy/node_modules ./node_modules
+COPY --from=build /app/tiler-deploy/dist ./dist
+COPY --from=build /app/tiler-deploy/package.json ./package.json
+COPY --from=build /app/apps/api/prisma ./prisma
+
+RUN node_modules/.bin/prisma generate --schema prisma/schema.prisma
+
+CMD ["node", "dist/index.js"]

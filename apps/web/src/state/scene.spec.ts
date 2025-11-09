@@ -114,6 +114,22 @@ describe('scene store', () => {
     expect(latest?.size.width).toBeGreaterThan(0)
   })
 
+  it('creates image nodes with intrinsic sizing and tile grid', () => {
+    const state = useSceneStore.getState()
+    state.updateWorldTransform({ position: { x: 0, y: 0 }, scale: 2 })
+
+    const imageNode = state.createImageNode({
+      assetId: 'asset-1',
+      intrinsicSize: { width: 512, height: 256 },
+    })
+
+    expect(imageNode.type).toBe('image')
+    expect(imageNode.size.width).toBeCloseTo(256)
+    expect(imageNode.size.height).toBeCloseTo(128)
+    expect(imageNode.image?.grid?.columns).toBe(2)
+    expect(imageNode.image?.grid?.rows).toBe(1)
+  })
+
   it('translates selection with undo/redo support', () => {
     const state = useSceneStore.getState()
     const a = createNode({ id: 'node-a', position: { x: 0, y: 0 }, size: { width: 100, height: 80 } })

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { Application, Container, Graphics, TilingSprite, Texture } from 'pixi.js'
+import { Application, Assets, Container, Graphics, Sprite, TilingSprite, Texture } from 'pixi.js'
 import {
   useSceneStore,
   screenToWorld,
@@ -22,7 +22,8 @@ const NORMALIZE_FACTOR = 2
 const GRID_SIZE = 64
 const DRAG_THRESHOLD = 4
 const SELECTION_COLOR = 0x38bdf8
-const HANDLE_HIT_PADDING = 1.5
+const HANDLE_HIT_PADDING = 2
+const HANDLE_HIT_MIN_PX = 18
 const DEFAULT_FILL_COLOR = 0x38bdf8
 const DEFAULT_STROKE_COLOR = 0x0ea5e9
 const DEFAULT_POLYGON_POINTS: Vec2[] = [
@@ -30,6 +31,57 @@ const DEFAULT_POLYGON_POINTS: Vec2[] = [
   { x: 0.5, y: 0.5 },
   { x: -0.5, y: 0.5 },
 ]
+const TILE_PIXEL_SIZE = 256
+
+const assetTextureCache = new Map<string, Texture>()
+const assetTexturePromises = new Map<string, Promise<Texture>>()
+const tileTextureCache = new Map<string, Texture>()
+const tileTexturePromises = new Map<string, Promise<Texture>>()
+
+function fetchAssetTexture(assetId: string) {
+  if (assetTextureCache.has(assetId)) {
+    return Promise.resolve(assetTextureCache.get(assetId)!)
+  }
+  if (assetTexturePromises.has(assetId)) {
+    return assetTexturePromises.get(assetId)!
+  }
+  const promise = Assets.load<Texture>(`/assets/${assetId}/variant/webp.webp`)
+    .catch(() => Assets.load<Texture>(`/assets/${assetId}/variant/avif.avif`))
+    .then((texture) => {
+      assetTextureCache.set(assetId, texture)
+      assetTexturePromises.delete(assetId)
+      return texture
+    })
+    .catch((error) => {
+      assetTexturePromises.delete(assetId)
+      throw error
+    })
+  assetTexturePromises.set(assetId, promise)
+  return promise
+}
+
+function fetchTileTexture(assetId: string, z: number, x: number, y: number) {
+  const cacheKey = `${assetId}:${z}:${x}:${y}`
+  if (tileTextureCache.has(cacheKey)) {
+    return Promise.resolve(tileTextureCache.get(cacheKey)!)
+  }
+  if (tileTexturePromises.has(cacheKey)) {
+    return tileTexturePromises.get(cacheKey)!
+  }
+  const promise = Assets.load<Texture>(`/tiles/${assetId}/${z}/${x}/${y}.webp`)
+    .catch(() => Assets.load<Texture>(`/tiles/${assetId}/${z}/${x}/${y}.avif`))
+    .then((texture) => {
+      tileTextureCache.set(cacheKey, texture)
+      tileTexturePromises.delete(cacheKey)
+      return texture
+    })
+    .catch((error) => {
+      tileTexturePromises.delete(cacheKey)
+      throw error
+    })
+  tileTexturePromises.set(cacheKey, promise)
+  return promise
+}
 
 type PointerMode =
   | 'idle'
@@ -47,6 +99,9 @@ interface NodeVisual {
   body: Graphics
   selection: Graphics
   node: SceneNode
+  image?: Sprite
+  tileContainer?: Container
+  tiles?: Map<string, Sprite>
 }
 
 function clamp(value: number, min: number, max: number) {
@@ -179,7 +234,7 @@ function nodeContainsPoint(node: SceneNode, point: Vec2) {
         }))
         return isPointInPolygon({ x: localX, y: localY }, polygon)
       }
-      case 'rectangle':
+      case 'rectangle': {
         if (!node.shape.cornerRadius) {
           return Math.abs(localX) <= halfWidth && Math.abs(localY) <= halfHeight
         }
@@ -187,6 +242,7 @@ function nodeContainsPoint(node: SceneNode, point: Vec2) {
         const clampedX = Math.max(Math.abs(localX) - (halfWidth - radius), 0)
         const clampedY = Math.max(Math.abs(localY) - (halfHeight - radius), 0)
         return clampedX * clampedX + clampedY * clampedY <= radius * radius
+      }
       default:
         return Math.abs(localX) <= halfWidth && Math.abs(localY) <= halfHeight
     }
@@ -200,7 +256,7 @@ const createPointerCaptureHelpers = (view: HTMLCanvasElement) => {
       if (!view.hasPointerCapture?.(pointerId)) {
         view.setPointerCapture(pointerId)
       }
-    } catch (error) {
+    } catch {
       // ignore
     }
   }
@@ -212,7 +268,7 @@ const createPointerCaptureHelpers = (view: HTMLCanvasElement) => {
       } else {
         view.releasePointerCapture(pointerId)
       }
-    } catch (error) {
+    } catch {
       // ignore
     }
   }
@@ -538,6 +594,8 @@ function configureScene(
     const rotationArmStart = -halfHeight
     const rotationArmEnd = rotationArmStart - armLength
 
+    overlayGeometry.rotationHandle = { x: 0, y: rotationArmEnd }
+
     groupSelection.moveTo(0, rotationArmStart)
     groupSelection.lineTo(0, rotationArmEnd)
     groupSelection.stroke({ color: 0xffffff, alpha: 0.45, width: sizing.strokeWidth })
@@ -545,10 +603,12 @@ function configureScene(
   }
 
   const detectHandleAtPoint = (worldPoint: Vec2, overlayGeometry: SelectionOverlayGeometry): HandleType | null => {
-    const sizing = calculateSelectionHandleSizing(world.scale.x)
-    const cornerThreshold = sizing.cornerRadius * HANDLE_HIT_PADDING
-    const edgeThreshold = sizing.edgeRadius * HANDLE_HIT_PADDING
-    const rotationThreshold = sizing.rotationRadius * HANDLE_HIT_PADDING
+    const scale = Math.max(Math.abs(world.scale.x), Number.EPSILON)
+    const sizing = calculateSelectionHandleSizing(scale)
+    const minThreshold = HANDLE_HIT_MIN_PX / scale
+    const cornerThreshold = Math.max(sizing.cornerRadius * HANDLE_HIT_PADDING, minThreshold)
+    const edgeThreshold = Math.max(sizing.edgeRadius * HANDLE_HIT_PADDING, minThreshold)
+    const rotationThreshold = Math.max(sizing.rotationRadius * HANDLE_HIT_PADDING, minThreshold)
 
     for (const corner of overlayGeometry.corners) {
       if (distanceBetween(worldPoint, toWorld(overlayGeometry, corner)) <= cornerThreshold) {
@@ -1306,6 +1366,40 @@ function configureScene(
   }
 }
 
+function ensureImageSprite(visual: NodeVisual) {
+  if (!visual.image) {
+    const sprite = new Sprite(Texture.WHITE)
+    sprite.anchor.set(0.5)
+    sprite.eventMode = 'none'
+    visual.container.addChildAt(sprite, 0)
+    visual.image = sprite
+  }
+  return visual.image
+}
+
+function hideImageSprite(visual: NodeVisual) {
+  if (visual.image) {
+    visual.image.visible = false
+  }
+  if (visual.tileContainer) {
+    visual.tileContainer.visible = false
+  }
+}
+
+function ensureTileContainer(visual: NodeVisual) {
+  if (!visual.tileContainer) {
+    const container = new Container()
+    container.eventMode = 'none'
+    visual.container.addChildAt(container, Math.min(visual.container.children.length, 1))
+    visual.tileContainer = container
+    visual.tiles = new Map()
+  }
+  if (!visual.tiles) {
+    visual.tiles = new Map()
+  }
+  return visual.tileContainer
+}
+
 function renderNodeVisual(visual: NodeVisual, node: SceneNode) {
   visual.node = node
   visual.container.position.set(node.position.x, node.position.y)
@@ -1314,6 +1408,34 @@ function renderNodeVisual(visual: NodeVisual, node: SceneNode) {
   const { width, height } = node.size
   const halfWidth = width / 2
   const halfHeight = height / 2
+
+  if (node.type === 'image' && node.image) {
+    visual.body.visible = false
+    const sprite = ensureImageSprite(visual)
+    sprite.visible = true
+    sprite.width = width
+    sprite.height = height
+    const cached = assetTextureCache.get(node.image.assetId)
+    if (cached) {
+      sprite.texture = cached
+    } else {
+      sprite.texture = Texture.WHITE
+      fetchAssetTexture(node.image.assetId)
+        .then((texture: Texture) => {
+          if (visual.image && !visual.image.destroyed && visual.node.image?.assetId === node.image?.assetId) {
+            visual.image.texture = texture
+          }
+        })
+        .catch((error: unknown) => {
+          console.error('[stage] failed to load asset texture', node.image?.assetId, error)
+        })
+    }
+    renderImageTiles(visual, node)
+    return
+  }
+
+  hideImageSprite(visual)
+  visual.body.visible = true
 
   const fillColor = hexColorToNumber(node.fill, DEFAULT_FILL_COLOR)
   const strokeColor = hexColorToNumber(node.stroke?.color, DEFAULT_STROKE_COLOR)
@@ -1348,6 +1470,75 @@ function renderNodeVisual(visual: NodeVisual, node: SceneNode) {
   if (strokeWidth > 0) {
     visual.body.stroke({ color: strokeColor, width: strokeWidth, alpha: 1 })
   }
+}
+
+function renderImageTiles(visual: NodeVisual, node: SceneNode) {
+  if (!node.image) return
+  const intrinsicWidth = Math.max(1, node.image.intrinsicSize.width)
+  const intrinsicHeight = Math.max(1, node.image.intrinsicSize.height)
+  const tileSize = node.image.tileSize ?? TILE_PIXEL_SIZE
+  const container = ensureTileContainer(visual)
+  const tiles = visual.tiles ?? new Map<string, Sprite>()
+  visual.tiles = tiles
+  container.visible = true
+
+  const cols = node.image.grid?.columns ?? Math.max(1, Math.ceil(intrinsicWidth / tileSize))
+  const rows = node.image.grid?.rows ?? Math.max(1, Math.ceil(intrinsicHeight / tileSize))
+  const needed = new Set<string>()
+
+  const scaleX = node.size.width / intrinsicWidth
+  const scaleY = node.size.height / intrinsicHeight
+
+  for (let y = 0; y < rows; y += 1) {
+    for (let x = 0; x < cols; x += 1) {
+      const key = `${x},${y}`
+      needed.add(key)
+      let sprite = tiles.get(key)
+      if (!sprite) {
+        sprite = new Sprite(Texture.WHITE)
+        sprite.anchor.set(0.5)
+        sprite.eventMode = 'none'
+        tiles.set(key, sprite)
+        container.addChild(sprite)
+      }
+
+      const originalWidth = Math.min(tileSize, intrinsicWidth - x * tileSize)
+      const originalHeight = Math.min(tileSize, intrinsicHeight - y * tileSize)
+      const displayWidth = Math.max(1, originalWidth * scaleX)
+      const displayHeight = Math.max(1, originalHeight * scaleY)
+      const offsetX = -node.size.width / 2 + x * tileSize * scaleX + displayWidth / 2
+      const offsetY = -node.size.height / 2 + y * tileSize * scaleY + displayHeight / 2
+
+      sprite.position.set(offsetX, offsetY)
+      sprite.width = displayWidth
+      sprite.height = displayHeight
+
+      const cachedKey = `${node.image.assetId}:0:${x}:${y}`
+      const cached = tileTextureCache.get(cachedKey)
+      if (cached) {
+        sprite.texture = cached
+      } else {
+        sprite.texture = Texture.WHITE
+        fetchTileTexture(node.image.assetId, 0, x, y)
+          .then((texture: Texture) => {
+            tileTextureCache.set(cachedKey, texture)
+            if (!sprite.destroyed) {
+              sprite.texture = texture
+            }
+          })
+          .catch((error: unknown) => {
+            console.error('[stage] failed to load tile texture', node.image?.assetId, x, y, error)
+          })
+      }
+    }
+  }
+
+  tiles.forEach((sprite, key) => {
+    if (!needed.has(key)) {
+      sprite.destroy()
+      tiles.delete(key)
+    }
+  })
 }
 
 function drawSelectionOverlay(visual: NodeVisual, worldScale: number, isSelected: boolean) {

@@ -1,6 +1,6 @@
 import { create } from 'zustand'
 
-export type SceneNodeType = 'rectangle' | 'shape'
+export type SceneNodeType = 'shape' | 'image'
 export type ShapeType = 'rectangle' | 'ellipse' | 'polygon'
 
 export interface Vec2 {
@@ -21,12 +21,23 @@ export interface SceneNode {
   size: Size2D
   rotation: number
   shape?: ShapeDefinition
+  image?: ImageDefinition
   fill?: string
   stroke?: {
     color: string
     width: number
   }
   locked: boolean
+}
+
+export interface ImageDefinition {
+  assetId: string
+  intrinsicSize: Size2D
+  tileSize?: number
+  grid?: {
+    columns: number
+    rows: number
+  }
 }
 
 export type ShapeDefinition =
@@ -64,6 +75,7 @@ const HISTORY_LIMIT = 200
 const MIN_NODE_SIZE = 2
 const DEFAULT_FILL = '#38bdf8'
 const DEFAULT_STROKE = '#0ea5e9'
+const DEFAULT_TILE_SIZE = 256
 const DEFAULT_POLYGON_POINTS: Vec2[] = [
   { x: 0, y: -0.5 },
   { x: 0.5, y: 0.5 },
@@ -90,6 +102,10 @@ interface SceneState {
   viewport: Viewport
   createRectangleNode: (overrides?: Partial<Omit<SceneNode, 'type'>>) => SceneNode
   createShapeNode: (shape: ShapeDefinition, overrides?: Partial<Omit<SceneNode, 'type' | 'shape'>>) => SceneNode
+  createImageNode: (
+    image: ImageDefinition,
+    overrides?: Partial<Omit<SceneNode, 'type' | 'image' | 'shape'>>, // images ignore shape overrides
+  ) => SceneNode
   deleteNodes: (ids: string[]) => void
   clearSelection: () => void
   setSelection: (ids: string[]) => void
@@ -182,6 +198,14 @@ const cloneNode = (node: SceneNode): SceneNode => ({
   position: { ...node.position },
   size: { ...node.size },
   shape: node.shape ? cloneShapeDefinition(node.shape) : undefined,
+  image: node.image
+    ? {
+        assetId: node.image.assetId,
+        intrinsicSize: { ...node.image.intrinsicSize },
+        tileSize: node.image.tileSize,
+        grid: node.image.grid ? { ...node.image.grid } : undefined,
+      }
+    : undefined,
   stroke: node.stroke ? { ...node.stroke } : undefined,
   locked: node.locked,
 })
@@ -270,6 +294,57 @@ export const useSceneStore = create<SceneState>((set, get) => ({
             width: (strokeOverrides.width ?? 2) * factor,
           }
         : { color: DEFAULT_STROKE, width: 2 * factor },
+      locked: overrides.locked ?? false,
+    }
+
+    set((prev) => {
+      const history = !prev.history.recording ? pushSnapshot(prev.history, createSnapshot(prev)) : prev.history
+      const nodes = [...prev.nodes, node]
+      return {
+        nodes,
+        selectedIds: [id],
+        lastSelectedId: id,
+        history,
+      }
+    })
+
+    return node
+  },
+  createImageNode: (image, overrides = {}) => {
+    const id = overrides.id ?? crypto.randomUUID()
+    const state = get()
+    const center = overrides.position ?? state.getWorldCenter()
+    const scale = state.world.scale || 1
+    const factor = 1 / scale
+    const intrinsic = {
+      width: image.intrinsicSize?.width ?? DEFAULT_RECT_SIZE.width,
+      height: image.intrinsicSize?.height ?? DEFAULT_RECT_SIZE.height,
+    }
+    const tileSize = image.tileSize ?? DEFAULT_TILE_SIZE
+    const grid = image.grid ?? {
+      columns: Math.max(1, Math.ceil(intrinsic.width / tileSize)),
+      rows: Math.max(1, Math.ceil(intrinsic.height / tileSize)),
+    }
+    const size = overrides.size ?? {
+      width: intrinsic.width * factor,
+      height: intrinsic.height * factor,
+    }
+
+    const node: SceneNode = {
+      id,
+      type: 'image',
+      name: overrides.name ?? `Image ${state.nodes.length + 1}`,
+      position: { x: center.x, y: center.y },
+      size: { width: size.width, height: size.height },
+      rotation: overrides.rotation ?? 0,
+      image: {
+        assetId: image.assetId,
+        intrinsicSize: { ...intrinsic },
+        tileSize,
+        grid,
+      },
+      fill: overrides.fill,
+      stroke: overrides.stroke,
       locked: overrides.locked ?? false,
     }
 
@@ -468,14 +543,14 @@ export const useSceneStore = create<SceneState>((set, get) => ({
     set((prev) => {
       if (prev.selectedIds.length === 0) return prev
       const selectedSet = new Set(prev.selectedIds)
-      const nodes = prev.nodes.map((node) =>
-        selectedSet.has(node.id)
-          ? {
-              ...node,
-              fill: color,
-            }
-          : node,
-      )
+      const nodes = prev.nodes.map((node) => {
+        if (!selectedSet.has(node.id)) return node
+        if (node.type !== 'shape') return node
+        return {
+          ...node,
+          fill: color,
+        }
+      })
       const history = !prev.history.recording ? pushSnapshot(prev.history, createSnapshot(prev)) : prev.history
       return {
         nodes,
@@ -488,6 +563,7 @@ export const useSceneStore = create<SceneState>((set, get) => ({
       const selectedSet = new Set(prev.selectedIds)
       const nodes = prev.nodes.map((node) => {
         if (!selectedSet.has(node.id)) return node
+        if (node.type !== 'shape') return node
         const prevStroke = node.stroke ?? { color: DEFAULT_STROKE, width: 2 }
         const nextStroke = {
           color: stroke.color ?? prevStroke.color,
