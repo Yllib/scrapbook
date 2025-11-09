@@ -19,6 +19,8 @@ export interface SelectionHandleSizing {
 }
 
 const ROTATION_HANDLE_OFFSET = 40
+const BASE_HANDLE_SIZE = 6
+const BASE_STROKE_SIZE = 1.5
 
 const rotateVector = (point: Vec2, angle: number): Vec2 => {
   const cos = Math.cos(angle)
@@ -118,10 +120,10 @@ export function calculateGroupSelectionOverlay(nodes: SceneNode[]): SelectionOve
 
 export function calculateSelectionHandleSizing(worldScale: number): SelectionHandleSizing {
   const safeScale = Math.abs(worldScale) < Number.EPSILON ? Number.EPSILON : Math.abs(worldScale)
-  const strokeWidth = Math.max(1.5, 1.5 / safeScale)
-  const cornerRadius = Math.max(6, 6 / safeScale)
-  const edgeRadius = cornerRadius * 0.75
-  const rotationRadius = cornerRadius
+  const strokeWidth = BASE_STROKE_SIZE / safeScale
+  const cornerRadius = BASE_HANDLE_SIZE / safeScale
+  const edgeRadius = (BASE_HANDLE_SIZE * 0.75) / safeScale
+  const rotationRadius = BASE_HANDLE_SIZE / safeScale
   return {
     strokeWidth,
     cornerRadius,

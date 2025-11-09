@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { Application, Container, Graphics, TilingSprite, Texture } from 'pixi.js'
 import {
   useSceneStore,
@@ -16,13 +16,20 @@ import {
 const DPR_CAP = 1.5
 const MIN_ZOOM = 1e-6
 const MAX_ZOOM = Number.POSITIVE_INFINITY
-const NORMALIZE_MIN_SCALE = 0.25
-const NORMALIZE_MAX_SCALE = 4
+const NORMALIZE_MIN_SCALE = 1e-5
+const NORMALIZE_MAX_SCALE = 128
 const NORMALIZE_FACTOR = 2
 const GRID_SIZE = 64
 const DRAG_THRESHOLD = 4
 const SELECTION_COLOR = 0x38bdf8
 const HANDLE_HIT_PADDING = 1.5
+const DEFAULT_FILL_COLOR = 0x38bdf8
+const DEFAULT_STROKE_COLOR = 0x0ea5e9
+const DEFAULT_POLYGON_POINTS: Vec2[] = [
+  { x: 0, y: -0.5 },
+  { x: 0.5, y: 0.5 },
+  { x: -0.5, y: 0.5 },
+]
 
 type PointerMode =
   | 'idle'
@@ -80,8 +87,23 @@ function createGridTexture(size = GRID_SIZE) {
   return Texture.from(canvas)
 }
 
-function distanceBetween(a: Vec2, b: Vec2) {
-  return Math.hypot(a.x - b.x, a.y - b.y)
+function hexColorToNumber(color: string | undefined, fallback: number): number {
+  if (!color) return fallback
+  let hex = color.trim()
+  if (hex.startsWith('#')) {
+    hex = hex.slice(1)
+  }
+  if (hex.length === 3) {
+    hex = hex
+      .split('')
+      .map((ch) => ch + ch)
+      .join('')
+  }
+  const value = Number.parseInt(hex, 16)
+  if (Number.isNaN(value)) {
+    return fallback
+  }
+  return value
 }
 
 function rotateVector(vec: Vec2, angle: number): Vec2 {
@@ -114,6 +136,24 @@ function isPointInsideOverlay(overlay: SelectionOverlayGeometry, worldPoint: Vec
   return Math.abs(local.x) <= overlay.width / 2 && Math.abs(local.y) <= overlay.height / 2
 }
 
+function isPointInPolygon(point: Vec2, polygon: Vec2[]): boolean {
+  if (polygon.length < 3) return false
+  let inside = false
+  for (let i = 0, j = polygon.length - 1; i < polygon.length; j = i, i += 1) {
+    const xi = polygon[i].x
+    const yi = polygon[i].y
+    const xj = polygon[j].x
+    const yj = polygon[j].y
+    const intersects = yi > point.y !== yj > point.y && point.x < ((xj - xi) * (point.y - yi)) / (yj - yi) + xi
+    if (intersects) inside = !inside
+  }
+  return inside
+}
+
+function distanceBetween(a: Vec2, b: Vec2) {
+  return Math.hypot(a.x - b.x, a.y - b.y)
+}
+
 function nodeContainsPoint(node: SceneNode, point: Vec2) {
   const angle = node.rotation ?? 0
   const cos = Math.cos(-angle)
@@ -124,6 +164,33 @@ function nodeContainsPoint(node: SceneNode, point: Vec2) {
   const localY = dx * sin + dy * cos
   const halfWidth = node.size.width / 2
   const halfHeight = node.size.height / 2
+  if (node.type === 'shape' && node.shape) {
+    switch (node.shape.kind) {
+      case 'ellipse': {
+        const normalizedX = localX / halfWidth
+        const normalizedY = localY / halfHeight
+        return normalizedX * normalizedX + normalizedY * normalizedY <= 1
+      }
+      case 'polygon': {
+        const points = node.shape.points.length >= 3 ? node.shape.points : DEFAULT_POLYGON_POINTS
+        const polygon = points.map((pt) => ({
+          x: pt.x * node.size.width,
+          y: pt.y * node.size.height,
+        }))
+        return isPointInPolygon({ x: localX, y: localY }, polygon)
+      }
+      case 'rectangle':
+        if (!node.shape.cornerRadius) {
+          return Math.abs(localX) <= halfWidth && Math.abs(localY) <= halfHeight
+        }
+        const radius = Math.min(node.shape.cornerRadius, Math.min(halfWidth, halfHeight))
+        const clampedX = Math.max(Math.abs(localX) - (halfWidth - radius), 0)
+        const clampedY = Math.max(Math.abs(localY) - (halfHeight - radius), 0)
+        return clampedX * clampedX + clampedY * clampedY <= radius * radius
+      default:
+        return Math.abs(localX) <= halfWidth && Math.abs(localY) <= halfHeight
+    }
+  }
   return Math.abs(localX) <= halfWidth && Math.abs(localY) <= halfHeight
 }
 
@@ -155,6 +222,12 @@ const createPointerCaptureHelpers = (view: HTMLCanvasElement) => {
 
 export function StageCanvas() {
   const hostRef = useRef<HTMLDivElement>(null)
+  const [unlockMenu, setUnlockMenu] = useState<{ x: number; y: number; nodeId: string; name: string } | null>(null)
+
+  const handleUnlockNode = useCallback((nodeId: string) => {
+    useSceneStore.getState().unlockNodes([nodeId])
+    setUnlockMenu(null)
+  }, [])
 
   useEffect(() => {
     const host = hostRef.current
@@ -211,7 +284,7 @@ export function StageCanvas() {
       view.style.height = '100%'
       view.style.touchAction = 'none'
 
-      cleanupScene = configureScene(app, host, view)
+      cleanupScene = configureScene(app, host, view, setUnlockMenu)
     }
 
     setup()
@@ -222,10 +295,30 @@ export function StageCanvas() {
     }
   }, [])
 
-  return <div ref={hostRef} className="stage-host" role="presentation" />
+  return (
+    <>
+      <div ref={hostRef} className="stage-host" role="presentation" />
+      {unlockMenu && (
+        <div
+          className="unlock-menu"
+          style={{ top: unlockMenu.y + 4, left: unlockMenu.x + 4 }}
+          onPointerDown={(event) => event.stopPropagation()}
+        >
+          <button type="button" onClick={() => handleUnlockNode(unlockMenu.nodeId)}>
+            Unlock “{unlockMenu.name}”
+          </button>
+        </div>
+      )}
+    </>
+  )
 }
 
-function configureScene(app: Application, host: HTMLDivElement, view: HTMLCanvasElement) {
+function configureScene(
+  app: Application,
+  host: HTMLDivElement,
+  view: HTMLCanvasElement,
+  setUnlockMenu: (value: { x: number; y: number; nodeId: string; name: string } | null) => void,
+) {
   const storeApi = useSceneStore
   const world = new Container()
   world.sortableChildren = true
@@ -296,11 +389,41 @@ function configureScene(app: Application, host: HTMLDivElement, view: HTMLCanvas
     spacePressed: false,
   }
 
-  const scaleNodeDimensions = (node: SceneNode, factor: number): SceneNode => ({
-    ...node,
-    position: { x: node.position.x * factor, y: node.position.y * factor },
-    size: { width: node.size.width * factor, height: node.size.height * factor },
-  })
+  const scaleNodeDimensions = (node: SceneNode, factor: number): SceneNode => {
+    const position = { x: node.position.x * factor, y: node.position.y * factor }
+    const size = { width: node.size.width * factor, height: node.size.height * factor }
+
+    let shape = node.shape
+    if (shape?.kind === 'rectangle') {
+      const maxRadius = Math.min(size.width, size.height) / 2
+      shape = {
+        kind: 'rectangle',
+        cornerRadius: Math.min((shape.cornerRadius ?? 0) * factor, maxRadius),
+      }
+    } else if (shape?.kind === 'polygon') {
+      shape = {
+        kind: 'polygon',
+        points: shape.points.map((point) => ({ ...point })),
+      }
+    } else if (shape?.kind === 'ellipse') {
+      shape = { kind: 'ellipse' }
+    }
+
+    const stroke = node.stroke
+      ? {
+          ...node.stroke,
+          width: node.stroke.width * factor,
+        }
+      : undefined
+
+    return {
+      ...node,
+      position,
+      size,
+      shape,
+      stroke,
+    }
+  }
 
   const currentWorldTransform = () => ({
     position: { x: world.position.x, y: world.position.y },
@@ -396,13 +519,11 @@ function configureScene(app: Application, host: HTMLDivElement, view: HTMLCanvas
     groupSelection.position.set(overlayGeometry.center.x, overlayGeometry.center.y)
     groupSelection.rotation = overlayGeometry.rotation
 
+    const halfWidth = overlayGeometry.width / 2
+    const halfHeight = overlayGeometry.height / 2
+
     groupSelection
-      .rect(
-        -overlayGeometry.width / 2,
-        -overlayGeometry.height / 2,
-        overlayGeometry.width,
-        overlayGeometry.height,
-      )
+      .rect(-halfWidth, -halfHeight, overlayGeometry.width, overlayGeometry.height)
       .stroke({ color: 0xffffff, alpha: 0.65, width: sizing.strokeWidth })
 
     overlayGeometry.corners.forEach((corner) => {
@@ -413,12 +534,14 @@ function configureScene(app: Application, host: HTMLDivElement, view: HTMLCanvas
       groupSelection.circle(edge.x, edge.y, sizing.edgeRadius).fill({ color: 0x0ea5e9, alpha: 0.85 })
     })
 
-    groupSelection.moveTo(0, -overlayGeometry.height / 2)
-    groupSelection.lineTo(overlayGeometry.rotationHandle.x, overlayGeometry.rotationHandle.y)
+    const armLength = 60 / world.scale.x
+    const rotationArmStart = -halfHeight
+    const rotationArmEnd = rotationArmStart - armLength
+
+    groupSelection.moveTo(0, rotationArmStart)
+    groupSelection.lineTo(0, rotationArmEnd)
     groupSelection.stroke({ color: 0xffffff, alpha: 0.45, width: sizing.strokeWidth })
-    groupSelection
-      .circle(overlayGeometry.rotationHandle.x, overlayGeometry.rotationHandle.y, sizing.rotationRadius)
-      .fill({ color: 0xffffff, alpha: 0.85 })
+    groupSelection.circle(0, rotationArmEnd, sizing.rotationRadius).fill({ color: 0xffffff, alpha: 0.85 })
   }
 
   const detectHandleAtPoint = (worldPoint: Vec2, overlayGeometry: SelectionOverlayGeometry): HandleType | null => {
@@ -475,7 +598,7 @@ function configureScene(app: Application, host: HTMLDivElement, view: HTMLCanvas
       visual.container.zIndex = index
     }
 
-    applyRectangleVisual(visual, node)
+    renderNodeVisual(visual, node)
   }
 
   const removeNodeVisual = (id: string) => {
@@ -693,15 +816,34 @@ function configureScene(app: Application, host: HTMLDivElement, view: HTMLCanvas
     storeApi.getState().marqueeSelect(box, additive)
   }
 
-  const getNodeUnderPoint = (worldPoint: Vec2): SceneNode | null => {
+  const findTopNode = (worldPoint: Vec2, includeLocked = false): SceneNode | null => {
     const nodes = storeApi.getState().nodes
     for (let index = nodes.length - 1; index >= 0; index -= 1) {
       const node = nodes[index]
+      if (!includeLocked && node.locked) continue
       if (nodeContainsPoint(node, worldPoint)) {
         return node
       }
     }
     return null
+  }
+
+  const getNodeUnderPoint = (worldPoint: Vec2): SceneNode | null => findTopNode(worldPoint, false)
+
+  const handleContextMenu = (event: MouseEvent) => {
+    event.preventDefault()
+    const rect = view.getBoundingClientRect()
+    const screenPoint = {
+      x: event.clientX - rect.left,
+      y: event.clientY - rect.top,
+    }
+    const worldPoint = screenToWorld(screenPoint, currentWorldTransform())
+    const lockedNode = findTopNode(worldPoint, true)
+    if (lockedNode && lockedNode.locked) {
+      setUnlockMenu({ x: event.clientX, y: event.clientY, nodeId: lockedNode.id, name: lockedNode.name })
+    } else {
+      setUnlockMenu(null)
+    }
   }
 
   const updateHoverState = (event: PointerEvent) => {
@@ -738,6 +880,7 @@ function configureScene(app: Application, host: HTMLDivElement, view: HTMLCanvas
   }
 
   const handlePointerDown = (event: PointerEvent) => {
+    setUnlockMenu(null)
     const isTouch = event.pointerType === 'touch'
     const screenPoint = getScreenPoint(event)
     const worldPoint = screenToWorld(screenPoint, currentWorldTransform())
@@ -1100,6 +1243,17 @@ function configureScene(app: Application, host: HTMLDivElement, view: HTMLCanvas
         }
       }
       event.preventDefault()
+      return
+    }
+
+    if (!event.metaKey && !event.ctrlKey) {
+      if (event.key === 'Delete' || event.key === 'Backspace') {
+        const state = storeApi.getState()
+        if (state.selectedIds.length > 0) {
+          state.deleteNodes([...state.selectedIds])
+        }
+        event.preventDefault()
+      }
     }
   }
 
@@ -1124,7 +1278,7 @@ function configureScene(app: Application, host: HTMLDivElement, view: HTMLCanvas
   view.addEventListener('pointercancel', handlePointerCancel)
   view.addEventListener('pointerleave', handlePointerLeave)
   view.addEventListener('wheel', handleWheel, { passive: false })
-  view.addEventListener('contextmenu', (event) => event.preventDefault())
+  view.addEventListener('contextmenu', handleContextMenu)
   window.addEventListener('keydown', handleKeyDown)
   window.addEventListener('keyup', handleKeyUp)
 
@@ -1136,6 +1290,7 @@ function configureScene(app: Application, host: HTMLDivElement, view: HTMLCanvas
     view.removeEventListener('pointercancel', handlePointerCancel)
     view.removeEventListener('pointerleave', handlePointerLeave)
     view.removeEventListener('wheel', handleWheel)
+    view.removeEventListener('contextmenu', handleContextMenu)
     window.removeEventListener('keydown', handleKeyDown)
     window.removeEventListener('keyup', handleKeyUp)
     app.ticker.remove(ticker)
@@ -1151,7 +1306,7 @@ function configureScene(app: Application, host: HTMLDivElement, view: HTMLCanvas
   }
 }
 
-function applyRectangleVisual(visual: NodeVisual, node: SceneNode) {
+function renderNodeVisual(visual: NodeVisual, node: SceneNode) {
   visual.node = node
   visual.container.position.set(node.position.x, node.position.y)
   visual.container.rotation = node.rotation
@@ -1160,10 +1315,39 @@ function applyRectangleVisual(visual: NodeVisual, node: SceneNode) {
   const halfWidth = width / 2
   const halfHeight = height / 2
 
+  const fillColor = hexColorToNumber(node.fill, DEFAULT_FILL_COLOR)
+  const strokeColor = hexColorToNumber(node.stroke?.color, DEFAULT_STROKE_COLOR)
+  const strokeWidth = node.stroke?.width ?? 2
+
   visual.body.clear()
-  visual.body.roundRect(-halfWidth, -halfHeight, width, height, 12)
-  visual.body.fill({ color: 0x1f2937, alpha: 0.92 })
-  visual.body.stroke({ color: 0x0f172a, alpha: 0.8, width: 2 })
+
+  const shape = node.type === 'shape' ? node.shape : undefined
+
+  if (shape?.kind === 'rectangle') {
+    const radius = Math.min(shape.cornerRadius ?? 0, Math.min(width, height) / 2)
+    visual.body.roundRect(-halfWidth, -halfHeight, width, height, radius)
+  } else if (shape?.kind === 'ellipse') {
+    visual.body.ellipse(0, 0, halfWidth, halfHeight)
+  } else if (shape?.kind === 'polygon') {
+    const points = shape.points.length >= 3 ? shape.points : DEFAULT_POLYGON_POINTS
+    const first = points[0]
+    visual.body.moveTo(first.x * width, first.y * height)
+    for (let idx = 1; idx < points.length; idx += 1) {
+      const pt = points[idx]
+      visual.body.lineTo(pt.x * width, pt.y * height)
+    }
+    visual.body.closePath()
+  } else {
+    visual.body.roundRect(-halfWidth, -halfHeight, width, height, 12)
+  }
+
+  if (node.fill !== null) {
+    visual.body.fill({ color: fillColor, alpha: 1 })
+  }
+
+  if (strokeWidth > 0) {
+    visual.body.stroke({ color: strokeColor, width: strokeWidth, alpha: 1 })
+  }
 }
 
 function drawSelectionOverlay(visual: NodeVisual, worldScale: number, isSelected: boolean) {
@@ -1178,11 +1362,10 @@ function drawSelectionOverlay(visual: NodeVisual, worldScale: number, isSelected
   const { width, height } = visual.node.size
   const halfWidth = width / 2
   const halfHeight = height / 2
-  const strokeWidth = Math.max(1.5, 1.5 / worldScale)
-  const handleRadius = Math.max(4, 4 / worldScale)
+  const sizing = calculateSelectionHandleSizing(worldScale)
 
   overlay.rect(-halfWidth, -halfHeight, width, height)
-  overlay.stroke({ color: SELECTION_COLOR, width: strokeWidth, alpha: 0.95 })
+  overlay.stroke({ color: SELECTION_COLOR, width: sizing.strokeWidth, alpha: 0.95 })
 
   const corners: Vec2[] = [
     { x: -halfWidth, y: -halfHeight },
@@ -1192,7 +1375,7 @@ function drawSelectionOverlay(visual: NodeVisual, worldScale: number, isSelected
   ]
 
   corners.forEach((corner) => {
-    overlay.circle(corner.x, corner.y, handleRadius).fill({ color: SELECTION_COLOR, alpha: 0.9 })
+    overlay.circle(corner.x, corner.y, sizing.cornerRadius).fill({ color: SELECTION_COLOR, alpha: 0.9 })
   })
 }
 

@@ -71,6 +71,28 @@ describe('selectionOverlay utilities', () => {
       expect(geometry).not.toBeNull()
       expect(geometry?.rotation).toBeCloseTo(Math.PI / 4)
     })
+
+    it('respects polygon points when computing bounds', () => {
+      const nodes: SceneNode[] = [
+        makeNode({
+          id: 'polygon',
+          type: 'shape',
+          shape: {
+            kind: 'polygon',
+            points: [
+              { x: 0, y: -0.5 },
+              { x: 0.5, y: 0.5 },
+              { x: -0.5, y: 0.5 },
+            ],
+          },
+        }),
+      ]
+
+      const geometry = calculateGroupSelectionOverlay(nodes)
+      expect(geometry).not.toBeNull()
+      expect(geometry?.width).toBeCloseTo(100)
+      expect(geometry?.height).toBeCloseTo(80)
+    })
   })
 
   describe('calculateSelectionHandleSizing', () => {
@@ -84,11 +106,11 @@ describe('selectionOverlay utilities', () => {
 
     it('shrinks handles as scale increases', () => {
       const sizing = calculateSelectionHandleSizing(10)
-      expect(sizing.strokeWidth).toBeCloseTo(1.5)
-      expect(sizing.cornerRadius).toBeCloseTo(6)
+      expect(sizing.strokeWidth).toBeCloseTo(0.15)
+      expect(sizing.cornerRadius).toBeCloseTo(0.6)
 
       const larger = calculateSelectionHandleSizing(100)
-      expect(larger.cornerRadius).toBeCloseTo(6)
+      expect(larger.cornerRadius).toBeCloseTo(0.06)
     })
 
     it('grows handles as scale decreases', () => {

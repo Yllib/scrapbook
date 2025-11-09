@@ -101,6 +101,19 @@ describe('scene store', () => {
     expect(backToScreen.y).toBeCloseTo(screenPoint.y, 6)
   })
 
+  it('creates shape nodes with defaults', () => {
+    const state = useSceneStore.getState()
+    const shape = state.createShapeNode({ kind: 'ellipse' })
+
+    expect(shape.type).toBe('shape')
+    expect(shape.fill).toBeDefined()
+    expect(shape.stroke?.width).toBeGreaterThan(0)
+
+    const latest = useSceneStore.getState().nodes.at(-1)
+    expect(latest?.id).toBe(shape.id)
+    expect(latest?.size.width).toBeGreaterThan(0)
+  })
+
   it('translates selection with undo/redo support', () => {
     const state = useSceneStore.getState()
     const a = createNode({ id: 'node-a', position: { x: 0, y: 0 }, size: { width: 100, height: 80 } })
@@ -184,5 +197,92 @@ describe('scene store', () => {
     expect(originalB.position.x).toBeCloseTo(100)
     expect(originalB.position.y).toBeCloseTo(0)
     expect(originalB.rotation).toBeCloseTo(0)
+  })
+
+  it('updates fill and stroke for selected shapes', () => {
+    const state = useSceneStore.getState()
+    const shape = state.createShapeNode({ kind: 'rectangle', cornerRadius: 10 })
+    state.updateSelectedFill('#ff0000')
+    state.updateSelectedStroke({ color: '#00ff00', width: 4 })
+
+    const updated = useSceneStore.getState().nodes.find((node) => node.id === shape.id)
+    expect(updated?.fill).toBe('#ff0000')
+    expect(updated?.stroke?.color).toBe('#00ff00')
+    expect(updated?.stroke?.width).toBe(4)
+  })
+
+  it('updates corner radius for selected rectangles', () => {
+    const state = useSceneStore.getState()
+    const shape = state.createShapeNode({ kind: 'rectangle', cornerRadius: 8 })
+    state.updateSelectedCornerRadius(24)
+
+    const updated = useSceneStore.getState().nodes.find((node) => node.id === shape.id)
+    expect(updated?.shape?.kind).toBe('rectangle')
+    expect(updated?.shape?.kind === 'rectangle' ? updated.shape.cornerRadius : 0).toBe(24)
+  })
+
+  it('scales rectangle corner radius with transforms', () => {
+    const state = useSceneStore.getState()
+    const shape = state.createShapeNode({ kind: 'rectangle', cornerRadius: 10 }, { size: { width: 100, height: 80 } })
+    state.setSelection([shape.id])
+    state.startTransformSession()
+    state.scaleSelected({ x: 0, y: 0 }, 2)
+    state.commitTransformSession()
+
+    const updated = useSceneStore.getState().nodes.find((node) => node.id === shape.id)
+    expect(updated?.shape?.kind).toBe('rectangle')
+    expect(updated?.shape?.kind === 'rectangle' ? updated.shape.cornerRadius : 0).toBeCloseTo(20)
+  })
+
+  it('locks and unlocks nodes', () => {
+    const state = useSceneStore.getState()
+    const node = createNode({ id: 'lock-test', position: { x: 0, y: 0 } })
+    state.setSelection([node.id])
+    state.lockSelected()
+
+    expect(useSceneStore.getState().nodes.find((n) => n.id === node.id)?.locked).toBe(true)
+    expect(useSceneStore.getState().selectedIds).toHaveLength(0)
+
+    useSceneStore.getState().unlockNodes([node.id])
+    expect(useSceneStore.getState().nodes.find((n) => n.id === node.id)?.locked).toBe(false)
+  })
+
+  it('ignores locked nodes during marquee selection', () => {
+    const state = useSceneStore.getState()
+    const lockedNode = createNode({ id: 'locked', position: { x: 0, y: 0 } })
+    state.setSelection([lockedNode.id])
+    state.lockSelected()
+
+    const unlocked = createNode({ id: 'free', position: { x: 200, y: 0 } })
+    state.updateViewport({ width: 800, height: 600 })
+    state.updateWorldTransform({ position: { x: 400, y: 300 }, scale: 1 })
+
+    state.marqueeSelect({ minX: -10, minY: -10, maxX: 210, maxY: 10 }, false)
+
+    const selected = useSceneStore.getState().selectedIds
+    expect(selected).toEqual([unlocked.id])
+  })
+
+  it('reorders nodes front/back', () => {
+    const state = useSceneStore.getState()
+    const a = createNode({ id: 'a', name: 'A', position: { x: -200, y: 0 } })
+    const b = createNode({ id: 'b', name: 'B', position: { x: 0, y: 0 } })
+    const c = createNode({ id: 'c', name: 'C', position: { x: 200, y: 0 } })
+
+    expect(useSceneStore.getState().nodes.map((node) => node.id)).toEqual([a.id, b.id, c.id])
+
+    state.setSelection([b.id])
+    state.bringSelectedToFront()
+    expect(useSceneStore.getState().nodes.map((node) => node.id)).toEqual([a.id, c.id, b.id])
+
+    state.sendSelectedToBack()
+    expect(useSceneStore.getState().nodes.map((node) => node.id)).toEqual([b.id, a.id, c.id])
+
+    state.setSelection([a.id])
+    state.bringSelectedForward()
+    expect(useSceneStore.getState().nodes.map((node) => node.id)).toEqual([b.id, c.id, a.id])
+
+    state.sendSelectedBackward()
+    expect(useSceneStore.getState().nodes.map((node) => node.id)).toEqual([b.id, a.id, c.id])
   })
 })

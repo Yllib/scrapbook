@@ -1,6 +1,7 @@
 import { create } from 'zustand'
 
-export type SceneNodeType = 'rectangle'
+export type SceneNodeType = 'rectangle' | 'shape'
+export type ShapeType = 'rectangle' | 'ellipse' | 'polygon'
 
 export interface Vec2 {
   x: number
@@ -19,7 +20,27 @@ export interface SceneNode {
   position: Vec2
   size: Size2D
   rotation: number
+  shape?: ShapeDefinition
+  fill?: string
+  stroke?: {
+    color: string
+    width: number
+  }
+  locked: boolean
 }
+
+export type ShapeDefinition =
+  | {
+      kind: 'rectangle'
+      cornerRadius: number
+    }
+  | {
+      kind: 'ellipse'
+    }
+  | {
+      kind: 'polygon'
+      points: Vec2[]
+    }
 
 export interface AABB {
   minX: number
@@ -41,6 +62,13 @@ export interface Viewport {
 const DEFAULT_RECT_SIZE: Size2D = { width: 160, height: 120 }
 const HISTORY_LIMIT = 200
 const MIN_NODE_SIZE = 2
+const DEFAULT_FILL = '#38bdf8'
+const DEFAULT_STROKE = '#0ea5e9'
+const DEFAULT_POLYGON_POINTS: Vec2[] = [
+  { x: 0, y: -0.5 },
+  { x: 0.5, y: 0.5 },
+  { x: -0.5, y: 0.5 },
+]
 
 interface SceneSnapshot {
   nodes: SceneNode[]
@@ -61,6 +89,7 @@ interface SceneState {
   world: WorldTransform
   viewport: Viewport
   createRectangleNode: (overrides?: Partial<Omit<SceneNode, 'type'>>) => SceneNode
+  createShapeNode: (shape: ShapeDefinition, overrides?: Partial<Omit<SceneNode, 'type' | 'shape'>>) => SceneNode
   deleteNodes: (ids: string[]) => void
   clearSelection: () => void
   setSelection: (ids: string[]) => void
@@ -74,6 +103,15 @@ interface SceneState {
   translateSelected: (delta: Vec2, options?: { record?: boolean }) => void
   scaleSelected: (center: Vec2, scaleFactor: number, options?: { record?: boolean }) => void
   rotateSelected: (center: Vec2, deltaRadians: number, options?: { record?: boolean }) => void
+  updateSelectedFill: (color: string) => void
+  updateSelectedStroke: (stroke: Partial<{ color: string; width: number }>) => void
+  updateSelectedCornerRadius: (cornerRadius: number) => void
+  lockSelected: () => void
+  unlockNodes: (ids: string[]) => void
+  bringSelectedForward: () => void
+  sendSelectedBackward: () => void
+  bringSelectedToFront: () => void
+  sendSelectedToBack: () => void
   undo: () => void
   redo: () => void
   history: HistoryState
@@ -93,10 +131,59 @@ const clampSelectionToNodes = (ids: string[], nodes: SceneNode[]) => {
   return unique(ids.filter((id) => existing.has(id)))
 }
 
+const cloneShapeDefinition = (shape: ShapeDefinition): ShapeDefinition =>
+  shape.kind === 'polygon'
+    ? {
+        kind: 'polygon',
+        points: shape.points.map((point) => ({ ...point })),
+      }
+    : { ...shape }
+
+const sanitizeShapeDefinition = (shape: ShapeDefinition | undefined): ShapeDefinition | undefined => {
+  if (!shape) return undefined
+  if (shape.kind === 'rectangle') {
+    const cornerRadius = Math.max(0, shape.cornerRadius ?? 0)
+    return { kind: 'rectangle', cornerRadius }
+  }
+  if (shape.kind === 'ellipse') {
+    return { kind: 'ellipse' }
+  }
+  const points = shape.points?.length ? shape.points : DEFAULT_POLYGON_POINTS
+  const sanitized = points.map((point) => ({ x: point.x, y: point.y }))
+  return {
+    kind: 'polygon',
+    points: sanitized,
+  }
+}
+
+const scaleShapeDefinition = (
+  shape: ShapeDefinition | undefined,
+  scaleFactor: number,
+  width: number,
+  height: number,
+): ShapeDefinition | undefined => {
+  if (!shape) return undefined
+  if (shape.kind === 'rectangle') {
+    const scaledRadius = (shape.cornerRadius ?? 0) * scaleFactor
+    const maxRadius = Math.min(width, height) / 2
+    return { kind: 'rectangle', cornerRadius: Math.min(scaledRadius, maxRadius) }
+  }
+  if (shape.kind === 'ellipse') {
+    return { kind: 'ellipse' }
+  }
+  return {
+    kind: 'polygon',
+    points: shape.points.map((point) => ({ ...point })),
+  }
+}
+
 const cloneNode = (node: SceneNode): SceneNode => ({
   ...node,
   position: { ...node.position },
   size: { ...node.size },
+  shape: node.shape ? cloneShapeDefinition(node.shape) : undefined,
+  stroke: node.stroke ? { ...node.stroke } : undefined,
+  locked: node.locked,
 })
 
 const cloneNodes = (nodes: SceneNode[]) => nodes.map((node) => cloneNode(node))
@@ -142,17 +229,48 @@ export const useSceneStore = create<SceneState>((set, get) => ({
     recording: false,
   },
   createRectangleNode: (overrides = {}) => {
-    const id = overrides.id ?? crypto.randomUUID()
     const state = get()
     const center = overrides.position ?? state.getWorldCenter()
     const size = overrides.size ?? DEFAULT_RECT_SIZE
+    return state.createShapeNode(
+      { kind: 'rectangle', cornerRadius: 0 },
+      {
+        id: overrides.id,
+        name: overrides.name ?? `Rectangle ${state.nodes.length + 1}`,
+        position: center,
+        size,
+        rotation: overrides.rotation,
+        fill: overrides.fill,
+        stroke: overrides.stroke,
+        locked: overrides.locked,
+      },
+    )
+  },
+  createShapeNode: (shape, overrides = {}) => {
+    const id = overrides.id ?? crypto.randomUUID()
+    const state = get()
+    const center = overrides.position ?? state.getWorldCenter()
+    const scale = state.world.scale || 1
+    const factor = 1 / scale
+    const size = overrides.size ?? { width: DEFAULT_RECT_SIZE.width * factor, height: DEFAULT_RECT_SIZE.height * factor }
+    const shapeDef = sanitizeShapeDefinition(shape) ?? { kind: 'rectangle', cornerRadius: 0 }
+    const strokeOverrides = overrides.stroke
     const node: SceneNode = {
       id,
-      type: 'rectangle',
-      name: overrides.name ?? `Rectangle ${state.nodes.length + 1}`,
+      type: 'shape',
+      name: overrides.name ?? `Shape ${state.nodes.length + 1}`,
       position: { x: center.x, y: center.y },
       size: { width: size.width, height: size.height },
       rotation: overrides.rotation ?? 0,
+      shape: cloneShapeDefinition(shapeDef),
+      fill: overrides.fill ?? DEFAULT_FILL,
+      stroke: strokeOverrides
+        ? {
+            color: strokeOverrides.color ?? DEFAULT_STROKE,
+            width: (strokeOverrides.width ?? 2) * factor,
+          }
+        : { color: DEFAULT_STROKE, width: 2 * factor },
+      locked: overrides.locked ?? false,
     }
 
     set((prev) => {
@@ -190,7 +308,7 @@ export const useSceneStore = create<SceneState>((set, get) => ({
   clearSelection: () => set({ selectedIds: [], lastSelectedId: null }),
   setSelection: (ids) =>
     set((prev) => {
-      const selectedIds = clampSelectionToNodes(ids, prev.nodes)
+      const selectedIds = clampSelectionToNodes(ids, prev.nodes.filter((node) => !node.locked))
       return {
         selectedIds,
         lastSelectedId: selectedIds.at(-1) ?? null,
@@ -206,7 +324,7 @@ export const useSceneStore = create<SceneState>((set, get) => ({
         }
       }
 
-      const nodeExists = prev.nodes.some((node) => node.id === id)
+      const nodeExists = prev.nodes.some((node) => node.id === id && !node.locked)
       if (!nodeExists) return {}
 
       return {
@@ -217,7 +335,7 @@ export const useSceneStore = create<SceneState>((set, get) => ({
   marqueeSelect: (box, additive) =>
     set((prev) => {
       const intersecting = prev.nodes
-        .filter((node) => intersectsAABB(box, getNodeAABB(node)))
+        .filter((node) => !node.locked && intersectsAABB(box, getNodeAABB(node)))
         .map((node) => node.id)
       if (intersecting.length === 0) {
         return additive ? {} : { selectedIds: [], lastSelectedId: null }
@@ -302,6 +420,13 @@ export const useSceneStore = create<SceneState>((set, get) => ({
           ...node,
           position: { x: newX, y: newY },
           size: { width, height },
+          shape: scaleShapeDefinition(node.shape, safeScale, width, height),
+          stroke: node.stroke
+            ? {
+                ...node.stroke,
+                width: Math.max(node.stroke.width * safeScale, 0),
+              }
+            : undefined,
         }
       })
       const shouldRecord = options?.record ?? false
@@ -330,12 +455,166 @@ export const useSceneStore = create<SceneState>((set, get) => ({
             y: center.y + rotatedY,
           },
           rotation: normalizeAngle(node.rotation + deltaRadians),
+          stroke: node.stroke ? { ...node.stroke } : undefined,
         }
       })
       const shouldRecord = options?.record ?? false
       const history = shouldRecord && !prev.history.recording
         ? pushSnapshot(prev.history, createSnapshot(prev))
         : prev.history
+      return { nodes, history }
+    }),
+  updateSelectedFill: (color) =>
+    set((prev) => {
+      if (prev.selectedIds.length === 0) return prev
+      const selectedSet = new Set(prev.selectedIds)
+      const nodes = prev.nodes.map((node) =>
+        selectedSet.has(node.id)
+          ? {
+              ...node,
+              fill: color,
+            }
+          : node,
+      )
+      const history = !prev.history.recording ? pushSnapshot(prev.history, createSnapshot(prev)) : prev.history
+      return {
+        nodes,
+        history,
+      }
+    }),
+  updateSelectedStroke: (stroke) =>
+    set((prev) => {
+      if (prev.selectedIds.length === 0) return prev
+      const selectedSet = new Set(prev.selectedIds)
+      const nodes = prev.nodes.map((node) => {
+        if (!selectedSet.has(node.id)) return node
+        const prevStroke = node.stroke ?? { color: DEFAULT_STROKE, width: 2 }
+        const nextStroke = {
+          color: stroke.color ?? prevStroke.color,
+          width: Math.max(0, stroke.width ?? prevStroke.width ?? 0),
+        }
+        return {
+          ...node,
+          stroke: nextStroke,
+        }
+      })
+      const history = !prev.history.recording ? pushSnapshot(prev.history, createSnapshot(prev)) : prev.history
+      return {
+        nodes,
+        history,
+      }
+    }),
+  updateSelectedCornerRadius: (cornerRadius) =>
+    set((prev) => {
+      if (prev.selectedIds.length === 0) return prev
+      const radius = Math.max(0, cornerRadius)
+      const selectedSet = new Set(prev.selectedIds)
+      const nodes = prev.nodes.map((node) => {
+        if (!selectedSet.has(node.id)) return node
+        if (node.type !== 'shape' || node.shape?.kind !== 'rectangle') return node
+        const maxRadius = Math.min(node.size.width, node.size.height) / 2
+        return {
+          ...node,
+          shape: {
+            kind: 'rectangle' as const,
+            cornerRadius: Math.min(radius, maxRadius),
+          },
+        }
+      })
+      const history = !prev.history.recording ? pushSnapshot(prev.history, createSnapshot(prev)) : prev.history
+      return {
+        nodes,
+        history,
+      }
+    }),
+  lockSelected: () =>
+    set((prev) => {
+      if (prev.selectedIds.length === 0) return prev
+      const history = !prev.history.recording ? pushSnapshot(prev.history, createSnapshot(prev)) : prev.history
+      const selectedSet = new Set(prev.selectedIds)
+      const nodes = prev.nodes.map((node) =>
+        selectedSet.has(node.id)
+          ? {
+              ...node,
+              locked: true,
+            }
+          : node,
+      )
+      return {
+        nodes,
+        selectedIds: [],
+        lastSelectedId: null,
+        history,
+      }
+    }),
+  unlockNodes: (ids) =>
+    set((prev) => {
+      if (ids.length === 0) return prev
+      const unlockSet = new Set(ids)
+      const nodes = prev.nodes.map((node) =>
+        unlockSet.has(node.id)
+          ? {
+              ...node,
+              locked: false,
+            }
+          : node,
+      )
+      const history = !prev.history.recording ? pushSnapshot(prev.history, createSnapshot(prev)) : prev.history
+      return {
+        nodes,
+        history,
+      }
+    }),
+  bringSelectedForward: () =>
+    set((prev) => {
+      if (prev.selectedIds.length === 0) return prev
+      const selectedSet = new Set(prev.selectedIds)
+      const nodes = [...prev.nodes]
+      let moved = false
+      for (let i = nodes.length - 2; i >= 0; i -= 1) {
+        if (selectedSet.has(nodes[i].id) && !selectedSet.has(nodes[i + 1]?.id)) {
+          ;[nodes[i], nodes[i + 1]] = [nodes[i + 1], nodes[i]]
+          moved = true
+        }
+      }
+      if (!moved) return prev
+      const history = !prev.history.recording ? pushSnapshot(prev.history, createSnapshot(prev)) : prev.history
+      return { nodes, history }
+    }),
+  sendSelectedBackward: () =>
+    set((prev) => {
+      if (prev.selectedIds.length === 0) return prev
+      const selectedSet = new Set(prev.selectedIds)
+      const nodes = [...prev.nodes]
+      let moved = false
+      for (let i = 1; i < nodes.length; i += 1) {
+        if (selectedSet.has(nodes[i].id) && !selectedSet.has(nodes[i - 1]?.id)) {
+          ;[nodes[i], nodes[i - 1]] = [nodes[i - 1], nodes[i]]
+          moved = true
+        }
+      }
+      if (!moved) return prev
+      const history = !prev.history.recording ? pushSnapshot(prev.history, createSnapshot(prev)) : prev.history
+      return { nodes, history }
+    }),
+  bringSelectedToFront: () =>
+    set((prev) => {
+      if (prev.selectedIds.length === 0) return prev
+      const selectedSet = new Set(prev.selectedIds)
+      const selectedNodes = prev.nodes.filter((node) => selectedSet.has(node.id))
+      const others = prev.nodes.filter((node) => !selectedSet.has(node.id))
+      const nodes = [...others, ...selectedNodes]
+      const history = !prev.history.recording ? pushSnapshot(prev.history, createSnapshot(prev)) : prev.history
+      return { nodes, history }
+    }),
+  sendSelectedToBack: () =>
+    set((prev) => {
+      if (prev.selectedIds.length === 0) return prev
+      const selectedSet = new Set(prev.selectedIds)
+      const selectedNodes = prev.nodes.filter((node) => selectedSet.has(node.id))
+      const others = prev.nodes.filter((node) => !selectedSet.has(node.id))
+      const nodes = [...selectedNodes, ...others]
+      const history = !prev.history.recording ? pushSnapshot(prev.history, createSnapshot(prev)) : prev.history
       return { nodes, history }
     }),
   undo: () =>
@@ -399,6 +678,21 @@ export const useSceneStore = create<SceneState>((set, get) => ({
 }))
 
 export function getNodeCorners(node: SceneNode): Vec2[] {
+  const angle = node.rotation ?? 0
+  const cos = Math.cos(angle)
+  const sin = Math.sin(angle)
+
+  if (node.shape?.kind === 'polygon' && node.shape.points.length >= 3) {
+    return node.shape.points.map((point) => {
+      const localX = point.x * node.size.width
+      const localY = point.y * node.size.height
+      return {
+        x: node.position.x + localX * cos - localY * sin,
+        y: node.position.y + localX * sin + localY * cos,
+      }
+    })
+  }
+
   const halfWidth = node.size.width / 2
   const halfHeight = node.size.height / 2
   const corners: Vec2[] = [
@@ -407,9 +701,6 @@ export function getNodeCorners(node: SceneNode): Vec2[] {
     { x: halfWidth, y: halfHeight },
     { x: -halfWidth, y: halfHeight },
   ]
-  const angle = node.rotation ?? 0
-  const cos = Math.cos(angle)
-  const sin = Math.sin(angle)
   return corners.map((corner) => ({
     x: node.position.x + corner.x * cos - corner.y * sin,
     y: node.position.y + corner.x * sin + corner.y * cos,
