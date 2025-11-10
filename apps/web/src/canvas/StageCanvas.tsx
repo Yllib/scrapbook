@@ -7,6 +7,7 @@ import {
   type Vec2,
   type AABB,
 } from '../state/scene'
+import { requestConfirmation } from '../state/dialog'
 import {
   calculateGroupSelectionOverlay,
   calculateSelectionHandleSizing,
@@ -1481,7 +1482,7 @@ function configureScene(
     redrawSelection()
   }
 
-  const handleKeyDown = (event: KeyboardEvent) => {
+  const handleKeyDown = async (event: KeyboardEvent) => {
     if (event.metaKey || event.ctrlKey) {
       const key = event.key.toLowerCase()
       if (key === 'z') {
@@ -1511,14 +1512,28 @@ function configureScene(
       return
     }
 
-    if (!event.metaKey && !event.ctrlKey) {
-      if (event.key === 'Delete' || event.key === 'Backspace') {
-        const state = storeApi.getState()
-        if (state.selectedIds.length > 0) {
+    if (!event.metaKey && !event.ctrlKey && event.key === 'Delete') {
+      event.preventDefault()
+      const state = storeApi.getState()
+      if (state.selectedIds.length > 0) {
+        const confirmed =
+          typeof window === 'undefined'
+            ? true
+            : await requestConfirmation({
+                title:
+                  state.selectedIds.length === 1
+                    ? 'Delete selected item?'
+                    : `Delete ${state.selectedIds.length} items?`,
+                message: 'This will remove the selected nodes permanently.',
+                confirmLabel: 'Delete',
+                cancelLabel: 'Cancel',
+                variant: 'danger',
+              })
+        if (confirmed) {
           state.deleteNodes([...state.selectedIds])
         }
-        event.preventDefault()
       }
+      return
     }
   }
 

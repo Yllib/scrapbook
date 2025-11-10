@@ -108,6 +108,7 @@ interface SceneState {
     overrides?: Partial<Omit<SceneNode, 'type' | 'image' | 'shape'>>, // images ignore shape overrides
   ) => SceneNode
   deleteNodes: (ids: string[]) => void
+  renameNode: (id: string, name: string) => void
   clearSelection: () => void
   setSelection: (ids: string[]) => void
   toggleSelection: (id: string) => void
@@ -383,6 +384,17 @@ export const useSceneStore = create<SceneState>((set, get) => ({
           ? pushSnapshot(prev.history, createSnapshot(prev))
           : prev.history,
       }
+    })
+  },
+  renameNode: (id, name) => {
+    set((prev) => {
+      const trimmed = name.trim()
+      if (!trimmed) return prev
+      const hasNode = prev.nodes.some((node) => node.id === id)
+      if (!hasNode) return prev
+      const nodes = prev.nodes.map((node) => (node.id === id ? { ...node, name: trimmed } : node))
+      const history = !prev.history.recording ? pushSnapshot(prev.history, createSnapshot(prev)) : prev.history
+      return { nodes, history }
     })
   },
   clearSelection: () => set({ selectedIds: [], lastSelectedId: null }),

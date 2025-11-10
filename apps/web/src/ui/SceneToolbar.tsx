@@ -1,6 +1,17 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent, type ChangeEventHandler } from 'react'
+import {
+  useCallback,
+  useMemo,
+  useRef,
+  useState,
+  useEffect,
+  type ChangeEvent,
+  type ChangeEventHandler,
+  type ReactNode,
+  type SVGProps,
+} from 'react'
 import { useSceneStore } from '../state/scene'
 import { uploadAsset, waitForAssetReady } from '../api/assets'
+import { useDialogStore } from '../state/dialog'
 
 const TRIANGLE_POINTS = [
   { x: 0, y: -0.5 },
@@ -13,6 +24,24 @@ const DEFAULT_STROKE = '#0ea5e9'
 const DEFAULT_RECT = { width: 200, height: 160 }
 const DEFAULT_ELLIPSE = { width: 200, height: 200 }
 const DEFAULT_TRIANGLE = { width: 220, height: 220 }
+
+interface ToolbarIconButtonProps {
+  label: string
+  icon: ReactNode
+  onClick: () => void
+  disabled?: boolean
+  variant?: 'accent' | 'ghost' | 'danger'
+  loading?: boolean
+}
+
+type ToolbarCommand = ToolbarIconButtonProps & { key: string }
+
+type ToolbarSection = {
+  key: string
+  label: string
+  commands?: ToolbarCommand[]
+  content?: ReactNode
+}
 
 export function SceneToolbar() {
   const [uploading, setUploading] = useState(false)
@@ -38,7 +67,25 @@ export function SceneToolbar() {
   const setSelectedAspectRatioLocked = useSceneStore((state) => state.setSelectedAspectRatioLocked)
   const worldScale = useSceneStore((state) => state.world.scale)
   const uploadInputRef = useRef<HTMLInputElement>(null)
-  const aspectRatioCheckboxRef = useRef<HTMLInputElement>(null)
+  const toolbarSectionsRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    const container = toolbarSectionsRef.current
+    if (!container) return
+    const mediaQuery = window.matchMedia('(max-width: 720px)')
+    const handleWheel = (event: WheelEvent) => {
+      if (!mediaQuery.matches || !container) return
+      if (event.ctrlKey || event.metaKey) return
+      if (Math.abs(event.deltaY) <= Math.abs(event.deltaX)) return
+      event.preventDefault()
+      container.scrollLeft += event.deltaY
+    }
+    container.addEventListener('wheel', handleWheel, { passive: false })
+    return () => {
+      container.removeEventListener('wheel', handleWheel)
+    }
+  }, [])
 
   const firstSelected = useMemo(() => {
     if (selectedIds.length === 0) return null
@@ -72,12 +119,6 @@ export function SceneToolbar() {
     const allSame = selectedNodes.every((node) => node.aspectRatioLocked === firstLock)
     return allSame ? firstLock : 'mixed'
   }, [nodes, selectedIds])
-
-  useEffect(() => {
-    if (aspectRatioCheckboxRef.current) {
-      aspectRatioCheckboxRef.current.indeterminate = aspectRatioState === 'mixed'
-    }
-  }, [aspectRatioState])
 
   const aspectRatioChecked = aspectRatioState !== false
 
@@ -195,21 +236,32 @@ export function SceneToolbar() {
     [updateCornerRadius],
   )
 
-  const handleAspectRatioToggle = useCallback(
-    (event: ChangeEvent<HTMLInputElement>) => {
-      setSelectedAspectRatioLocked(event.target.checked)
-    },
-    [setSelectedAspectRatioLocked],
-  )
+  const handleAspectRatioToggle = useCallback(() => {
+    if (selectedCount === 0) return
+    setSelectedAspectRatioLocked(!aspectRatioChecked)
+  }, [selectedCount, aspectRatioChecked, setSelectedAspectRatioLocked])
 
   const handleLockSelected = useCallback(() => {
     lockSelected()
   }, [lockSelected])
 
-  const handleDeleteSelected = useCallback(() => {
+  const requestConfirm = useDialogStore((state) => state.requestConfirm)
+
+  const handleDeleteSelected = useCallback(async () => {
     if (selectedCount === 0) return
+    const confirmed = await requestConfirm({
+      title: selectedCount === 1 ? 'Delete selected item?' : `Delete ${selectedCount} items?`,
+      message:
+        selectedCount === 1
+          ? 'This will remove the selected node permanently.'
+          : 'This will remove all selected nodes permanently.',
+      confirmLabel: 'Delete',
+      cancelLabel: 'Cancel',
+      variant: 'danger',
+    })
+    if (!confirmed) return
     deleteNodes([...selectedIds])
-  }, [deleteNodes, selectedCount, selectedIds])
+  }, [deleteNodes, selectedCount, selectedIds, requestConfirm])
 
   const handleBringForward = useCallback(() => {
     bringForward()
@@ -227,106 +279,306 @@ export function SceneToolbar() {
     sendToBack()
   }, [sendToBack])
 
-  return (
-    <div className="scene-toolbar" role="toolbar" aria-label="Scene actions">
-      <div className="toolbar-section">
-        <button type="button" className="toolbar-button" onClick={handleAddRect}>
-          Rectangle
-        </button>
-        <button type="button" className="toolbar-button" onClick={handleAddEllipse}>
-          Ellipse
-        </button>
-        <button type="button" className="toolbar-button" onClick={handleAddTriangle}>
-          Triangle
-        </button>
+  const aspectRatioLabel =
+    aspectRatioState === 'mixed'
+      ? 'Aspect ratio mixed—click to lock'
+      : aspectRatioState === false
+        ? 'Lock aspect ratio'
+        : 'Unlock aspect ratio'
+
+  const aspectRatioIcon =
+    aspectRatioState === 'mixed' ? <LockMixedIcon /> : aspectRatioState === false ? <UnlockIcon /> : <LockIcon />
+
+  const styleSectionContent = (
+    <div className="toolbar-style-grid">
+      <label className="toolbar-style-control">
+        <span>Fill</span>
+        <div className="color-swatch">
+          <input type="color" value={fillValue} onChange={handleFillChange} disabled={selectedCount === 0} />
+        </div>
+      </label>
+      <label className="toolbar-style-control">
+        <span>Stroke</span>
+        <div className="color-swatch">
+          <input type="color" value={strokeValue} onChange={handleStrokeColorChange} disabled={selectedCount === 0} />
+        </div>
+      </label>
+      <label className="toolbar-style-control">
+        <span>Width</span>
+        <input
+          type="number"
+          min={0}
+          step={1}
+          value={strokeWidthValue}
+          onChange={handleStrokeWidthChange}
+          disabled={selectedCount === 0}
+        />
+      </label>
+      <label className="toolbar-style-control">
+        <span>Radius</span>
+        <input
+          type="number"
+          min={0}
+          step={1}
+          value={cornerRadiusValue}
+          onChange={handleCornerRadiusChange}
+          disabled={!canEditCornerRadius}
+        />
+      </label>
+      <div className="toolbar-style-control toolbar-style-control--aspect">
+        <span>Aspect Ratio</span>
         <button
           type="button"
-          className="toolbar-button"
-          onClick={handleUploadClick}
-          disabled={uploading}
+          className={`toolbar-aspect-toggle${
+            aspectRatioState === true ? ' toolbar-aspect-toggle--locked' : ''
+          }${aspectRatioState === 'mixed' ? ' toolbar-aspect-toggle--mixed' : ''}`}
+          onClick={handleAspectRatioToggle}
+          disabled={selectedCount === 0}
+          aria-pressed={aspectRatioState === true}
+          aria-label={aspectRatioLabel}
         >
-          {uploading ? 'Uploading…' : 'Upload Image'}
+          <span aria-hidden="true">{aspectRatioIcon}</span>
+          <span className="sr-only">{aspectRatioLabel}</span>
         </button>
-        <input
-          ref={uploadInputRef}
-          type="file"
-          accept="image/*"
-          onChange={handleUploadFile}
-          style={{ display: 'none' }}
-        />
-      </div>
-      <div className="toolbar-section toolbar-colors" aria-label="Selection styling">
-        <label className="color-control">
-          <span>Fill</span>
-          <input type="color" value={fillValue} onChange={handleFillChange} disabled={selectedCount === 0} />
-        </label>
-        <label className="color-control">
-          <span>Stroke</span>
-          <input type="color" value={strokeValue} onChange={handleStrokeColorChange} disabled={selectedCount === 0} />
-        </label>
-        <label className="width-control">
-          <span>Width</span>
-          <input
-            type="number"
-            min={0}
-            step={1}
-            value={strokeWidthValue}
-            onChange={handleStrokeWidthChange}
-            disabled={selectedCount === 0}
-          />
-        </label>
-        <label className="width-control">
-          <span>Radius</span>
-          <input
-            type="number"
-            min={0}
-            step={1}
-            value={cornerRadiusValue}
-            onChange={handleCornerRadiusChange}
-            disabled={!canEditCornerRadius}
-          />
-        </label>
-        <label className="toggle-control">
-          <input
-            ref={aspectRatioCheckboxRef}
-            type="checkbox"
-            checked={aspectRatioChecked}
-            onChange={handleAspectRatioToggle}
-            disabled={selectedCount === 0}
-          />
-          <span>Lock aspect ratio</span>
-        </label>
-      </div>
-      <div className="toolbar-section toolbar-history" aria-label="Undo and redo">
-        <button type="button" className="toolbar-button" onClick={undo} disabled={!canUndo}>
-          Undo
-        </button>
-        <button type="button" className="toolbar-button" onClick={redo} disabled={!canRedo}>
-          Redo
-        </button>
-        <button type="button" className="toolbar-button" onClick={handleBringForward} disabled={selectedCount === 0}>
-          Forward
-        </button>
-        <button type="button" className="toolbar-button" onClick={handleSendBackward} disabled={selectedCount === 0}>
-          Backward
-        </button>
-        <button type="button" className="toolbar-button" onClick={handleBringToFront} disabled={selectedCount === 0}>
-          To Front
-        </button>
-        <button type="button" className="toolbar-button" onClick={handleSendToBack} disabled={selectedCount === 0}>
-          To Back
-        </button>
-        <button type="button" className="toolbar-button" onClick={handleLockSelected} disabled={selectedCount === 0}>
-          Lock
-        </button>
-        <button type="button" className="toolbar-button" onClick={handleDeleteSelected} disabled={selectedCount === 0}>
-          Delete
-        </button>
-      </div>
-      <div className="toolbar-stats" aria-live="polite">
-        <span>{nodeCount} nodes</span>
-        <span>{selectedCount} selected</span>
       </div>
     </div>
+  )
+
+  const toolbarSections: ToolbarSection[] = [
+    {
+      key: 'canvas',
+      label: 'Canvas',
+      commands: [
+        { key: 'rect', label: 'Rectangle', icon: <RectangleIcon />, onClick: handleAddRect, variant: 'accent' },
+        { key: 'ellipse', label: 'Ellipse', icon: <EllipseIcon />, onClick: handleAddEllipse, variant: 'accent' },
+        { key: 'triangle', label: 'Triangle', icon: <TriangleIcon />, onClick: handleAddTriangle, variant: 'accent' },
+        {
+          key: 'upload',
+          label: 'Upload image',
+          icon: <ImageIcon />,
+          onClick: handleUploadClick,
+          disabled: uploading,
+          loading: uploading,
+          variant: 'accent',
+        },
+      ],
+    },
+    {
+      key: 'style',
+      label: 'Style',
+      content: styleSectionContent,
+    },
+    {
+      key: 'actions',
+      label: 'Actions',
+      commands: [
+        { key: 'lock', label: 'Lock selection', icon: <LockIcon />, onClick: handleLockSelected, disabled: selectedCount === 0 },
+        { key: 'delete', label: 'Delete selection', icon: <TrashIcon />, onClick: handleDeleteSelected, disabled: selectedCount === 0, variant: 'danger' },
+      ],
+    },
+    {
+      key: 'history',
+      label: 'History',
+      commands: [
+        { key: 'undo', label: 'Undo', icon: <UndoIcon />, onClick: undo, disabled: !canUndo },
+        { key: 'redo', label: 'Redo', icon: <RedoIcon />, onClick: redo, disabled: !canRedo },
+      ],
+    },
+    {
+      key: 'layers',
+      label: 'Layer Order',
+      commands: [
+        { key: 'forward', label: 'Bring forward', icon: <ForwardIcon />, onClick: handleBringForward, disabled: selectedCount === 0 },
+        { key: 'backward', label: 'Send backward', icon: <BackwardIcon />, onClick: handleSendBackward, disabled: selectedCount === 0 },
+        { key: 'front', label: 'Bring to front', icon: <FrontIcon />, onClick: handleBringToFront, disabled: selectedCount === 0 },
+        { key: 'back', label: 'Send to back', icon: <BackIcon />, onClick: handleSendToBack, disabled: selectedCount === 0 },
+      ],
+    },
+  ]
+
+  return (
+    <aside className="scene-toolbar" role="toolbar" aria-label="Scene actions">
+      <div className="toolbar-sections" ref={toolbarSectionsRef}>
+        {toolbarSections.map((section) => (
+          <section key={section.key} className="toolbar-section">
+            <p className="toolbar-label">{section.label}</p>
+            {section.commands && section.commands.length > 0 && (
+              <div className="toolbar-icon-list">
+                {section.commands.map(({ key, ...command }) => (
+                  <ToolbarIconButton key={key} {...command} />
+                ))}
+              </div>
+            )}
+            {section.content ?? null}
+          </section>
+        ))}
+      </div>
+      <input
+        ref={uploadInputRef}
+        type="file"
+        accept="image/*"
+        onChange={handleUploadFile}
+        style={{ display: 'none' }}
+      />
+
+    </aside>
+  )
+}
+
+function ToolbarIconButton({ label, icon, onClick, disabled, variant = 'ghost', loading = false }: ToolbarIconButtonProps) {
+  const ariaLabel = loading ? `${label} (in progress)` : label
+  return (
+    <button
+      type="button"
+      className={`toolbar-icon-button toolbar-icon-button--${variant}`}
+      onClick={onClick}
+      title={ariaLabel}
+      aria-label={ariaLabel}
+      disabled={disabled || loading}
+      aria-busy={loading}
+    >
+      <span className={loading ? 'toolbar-icon toolbar-icon--spin' : 'toolbar-icon'} aria-hidden="true">
+        {icon}
+      </span>
+      <span className="sr-only">{ariaLabel}</span>
+    </button>
+  )
+}
+
+const iconProps = {
+  viewBox: '0 0 24 24',
+  fill: 'none',
+  stroke: 'currentColor',
+  strokeWidth: 1.8,
+  strokeLinecap: 'round',
+  strokeLinejoin: 'round',
+} satisfies SVGProps<SVGSVGElement>
+
+function RectangleIcon() {
+  return (
+    <svg {...iconProps}>
+      <rect x="5" y="7" width="14" height="10" rx="2" />
+    </svg>
+  )
+}
+
+function EllipseIcon() {
+  return (
+    <svg {...iconProps}>
+      <ellipse cx="12" cy="12" rx="6.5" ry="8" />
+    </svg>
+  )
+}
+
+function TriangleIcon() {
+  return (
+    <svg {...iconProps}>
+      <polygon points="12 5 19 19 5 19" />
+    </svg>
+  )
+}
+
+function ImageIcon() {
+  return (
+    <svg {...iconProps}>
+      <rect x="4" y="6" width="16" height="12" rx="2" />
+      <circle cx="9" cy="10" r="1.5" />
+      <path d="M21 15l-4.5-4.5a1 1 0 0 0-1.4 0L9 17" />
+    </svg>
+  )
+}
+
+function UndoIcon() {
+  return (
+    <svg {...iconProps}>
+      <path d="M9 14 4 9l5-5" />
+      <path d="M4 9h11a4 4 0 1 1 0 8h-1" />
+    </svg>
+  )
+}
+
+function RedoIcon() {
+  return (
+    <svg {...iconProps}>
+      <path d="m15 14 5-5-5-5" />
+      <path d="M20 9H9a4 4 0 1 0 0 8h1" />
+    </svg>
+  )
+}
+
+function ForwardIcon() {
+  return (
+    <svg {...iconProps}>
+      <polyline points="12 5 19 12 12 19" />
+      <line x1="5" y1="12" x2="19" y2="12" />
+    </svg>
+  )
+}
+
+function BackwardIcon() {
+  return (
+    <svg {...iconProps}>
+      <polyline points="12 5 5 12 12 19" />
+      <line x1="5" y1="12" x2="19" y2="12" />
+    </svg>
+  )
+}
+
+function FrontIcon() {
+  return (
+    <svg {...iconProps}>
+      <rect x="6" y="6" width="12" height="12" />
+      <rect x="9" y="9" width="12" height="12" />
+    </svg>
+  )
+}
+
+function BackIcon() {
+  return (
+    <svg {...iconProps}>
+      <rect x="6" y="6" width="12" height="12" />
+      <rect x="3" y="9" width="12" height="12" />
+    </svg>
+  )
+}
+
+function LockIcon() {
+  return (
+    <svg {...iconProps}>
+      <rect x="5" y="11" width="14" height="9" rx="2" />
+      <path d="M9 11V8a3 3 0 1 1 6 0v3" />
+    </svg>
+  )
+}
+
+function UnlockIcon() {
+  return (
+    <svg {...iconProps}>
+      <rect x="5" y="11" width="14" height="9" rx="2" />
+      <path d="M15 11V8a3 3 0 0 0-6 0" />
+    </svg>
+  )
+}
+
+function LockMixedIcon() {
+  return (
+    <svg {...iconProps}>
+      <rect x="5" y="11" width="14" height="9" rx="2" />
+      <path d="M12 7v4" />
+      <path d="M9 11V8a3 3 0 0 1 3-3" />
+      <path d="M15 11V8a3 3 0 0 0-3-3" />
+    </svg>
+  )
+}
+
+function TrashIcon() {
+  return (
+    <svg {...iconProps}>
+      <polyline points="3 6 5 6 21 6" />
+      <path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+      <path d="M19 6v13a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6" />
+      <line x1="10" y1="11" x2="10" y2="17" />
+      <line x1="14" y1="11" x2="14" y2="17" />
+    </svg>
   )
 }
