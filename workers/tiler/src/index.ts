@@ -162,29 +162,58 @@ async function generateTiles(assetId: string, source: Buffer, width: number, hei
     return
   }
 
-  const cols = Math.max(1, Math.ceil(width / TILE_SIZE))
-  const rows = Math.max(1, Math.ceil(height / TILE_SIZE))
-  const tilePromises: Promise<unknown>[] = []
+  const maxDimension = Math.max(width, height)
+  const maxLevel = Math.max(0, Math.ceil(Math.log2(maxDimension / TILE_SIZE)))
+
+  for (let level = 0; level <= maxLevel; level += 1) {
+    await generateTilesForLevel(assetId, source, width, height, level)
+  }
+}
+
+async function generateTilesForLevel(
+  assetId: string,
+  source: Buffer,
+  width: number,
+  height: number,
+  level: number,
+) {
+  const scale = 2 ** level
+  const targetWidth = Math.max(1, Math.ceil(width / scale))
+  const targetHeight = Math.max(1, Math.ceil(height / scale))
+  const cols = Math.max(1, Math.ceil(targetWidth / TILE_SIZE))
+  const rows = Math.max(1, Math.ceil(targetHeight / TILE_SIZE))
+  const quality = Math.max(50, 80 - level * 5)
+  const tileSource =
+    scale === 1
+      ? source
+      : await sharp(source)
+          .resize(targetWidth, targetHeight, {
+            fit: 'fill',
+            fastShrinkOnLoad: true,
+            withoutEnlargement: true,
+          })
+          .toBuffer()
+  const tilePromises: Promise<void>[] = []
 
   for (let y = 0; y < rows; y += 1) {
     for (let x = 0; x < cols; x += 1) {
       const left = x * TILE_SIZE
       const top = y * TILE_SIZE
-      const tileWidth = Math.min(TILE_SIZE, width - left)
-      const tileHeight = Math.min(TILE_SIZE, height - top)
+      const tileWidth = Math.max(1, Math.min(TILE_SIZE, targetWidth - left))
+      const tileHeight = Math.max(1, Math.min(TILE_SIZE, targetHeight - top))
 
-      const tilePromise = sharp(source)
+      const tilePromise = sharp(tileSource)
         .extract({ left, top, width: tileWidth, height: tileHeight })
         .resize(TILE_SIZE, TILE_SIZE, { fit: 'contain', background: { r: 0, g: 0, b: 0, alpha: 0 } })
-        .webp({ quality: 75 })
+        .webp({ quality })
         .toBuffer()
         .then(async (buffer) => {
-          const key = storage.generateKey(`tiles/${assetId}/${0}`, `${x}-${y}.webp`)
+          const key = storage.generateKey(`tiles/${assetId}/${level}`, `${x}-${y}.webp`)
           const stored = await storage.putObject({ key, contentType: 'image/webp', body: buffer })
           await prisma.assetTile.create({
             data: {
               assetId,
-              z: 0,
+              z: level,
               x,
               y,
               size: stored.size,

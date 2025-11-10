@@ -7,11 +7,27 @@ import {
   type ChangeEvent,
   type ChangeEventHandler,
   type ReactNode,
-  type SVGProps,
 } from 'react'
 import { useSceneStore } from '../state/scene'
 import { uploadAsset, waitForAssetReady } from '../api/assets'
 import { useDialogStore } from '../state/dialog'
+import { summarizeTileLevels } from '../tiles/tileLevels'
+import {
+  ArrowDownToLine,
+  ArrowUpToLine,
+  ChevronDown,
+  ChevronUp,
+  Circle,
+  ImageUp,
+  Link as LinkIcon,
+  Link2Off,
+  Lock,
+  Redo2,
+  RectangleHorizontal,
+  Trash2,
+  Triangle as TriangleIcon,
+  Undo2,
+} from 'lucide-react'
 
 const TRIANGLE_POINTS = [
   { x: 0, y: -0.5 },
@@ -175,6 +191,8 @@ export function SceneToolbar() {
         const meta = await waitForAssetReady(assetId)
         const intrinsicWidth = meta.width ?? 512
         const intrinsicHeight = meta.height ?? 512
+        const tileLevels = summarizeTileLevels(meta.tiles)
+        const maxTileLevel = tileLevels.length > 0 ? tileLevels[tileLevels.length - 1].z : undefined
         createImage(
           {
             assetId,
@@ -182,6 +200,8 @@ export function SceneToolbar() {
               width: intrinsicWidth,
               height: intrinsicHeight,
             },
+            tileLevels: tileLevels.length > 0 ? tileLevels : undefined,
+            maxTileLevel,
           },
           {
             name: file.name || 'Image',
@@ -287,7 +307,13 @@ export function SceneToolbar() {
         : 'Unlock aspect ratio'
 
   const aspectRatioIcon =
-    aspectRatioState === 'mixed' ? <LockMixedIcon /> : aspectRatioState === false ? <UnlockIcon /> : <LockIcon />
+    aspectRatioState === 'mixed' ? (
+      <Lock size={16} strokeWidth={1.8} className="toolbar-icon-mixed" />
+    ) : aspectRatioState === false ? (
+      <Link2Off size={16} strokeWidth={1.8} />
+    ) : (
+      <LinkIcon size={16} strokeWidth={1.8} />
+    )
 
   const styleSectionContent = (
     <div className="toolbar-style-grid">
@@ -349,13 +375,31 @@ export function SceneToolbar() {
       key: 'canvas',
       label: 'Canvas',
       commands: [
-        { key: 'rect', label: 'Rectangle', icon: <RectangleIcon />, onClick: handleAddRect, variant: 'accent' },
-        { key: 'ellipse', label: 'Ellipse', icon: <EllipseIcon />, onClick: handleAddEllipse, variant: 'accent' },
-        { key: 'triangle', label: 'Triangle', icon: <TriangleIcon />, onClick: handleAddTriangle, variant: 'accent' },
+        {
+          key: 'rect',
+          label: 'Rectangle',
+          icon: <RectangleHorizontal size={16} strokeWidth={1.8} />,
+          onClick: handleAddRect,
+          variant: 'accent',
+        },
+        {
+          key: 'ellipse',
+          label: 'Ellipse',
+          icon: <Circle size={16} strokeWidth={1.8} />,
+          onClick: handleAddEllipse,
+          variant: 'accent',
+        },
+        {
+          key: 'triangle',
+          label: 'Triangle',
+          icon: <TriangleIcon size={16} strokeWidth={1.8} />,
+          onClick: handleAddTriangle,
+          variant: 'accent',
+        },
         {
           key: 'upload',
           label: 'Upload image',
-          icon: <ImageIcon />,
+          icon: <ImageUp size={16} strokeWidth={1.8} />,
           onClick: handleUploadClick,
           disabled: uploading,
           loading: uploading,
@@ -372,26 +416,63 @@ export function SceneToolbar() {
       key: 'actions',
       label: 'Actions',
       commands: [
-        { key: 'lock', label: 'Lock selection', icon: <LockIcon />, onClick: handleLockSelected, disabled: selectedCount === 0 },
-        { key: 'delete', label: 'Delete selection', icon: <TrashIcon />, onClick: handleDeleteSelected, disabled: selectedCount === 0, variant: 'danger' },
+        {
+          key: 'lock',
+          label: 'Lock selection',
+          icon: <Lock size={16} strokeWidth={1.8} />,
+          onClick: handleLockSelected,
+          disabled: selectedCount === 0,
+        },
+        {
+          key: 'delete',
+          label: 'Delete selection',
+          icon: <Trash2 size={16} strokeWidth={1.8} />,
+          onClick: handleDeleteSelected,
+          disabled: selectedCount === 0,
+          variant: 'danger',
+        },
       ],
     },
     {
       key: 'history',
       label: 'History',
       commands: [
-        { key: 'undo', label: 'Undo', icon: <UndoIcon />, onClick: undo, disabled: !canUndo },
-        { key: 'redo', label: 'Redo', icon: <RedoIcon />, onClick: redo, disabled: !canRedo },
+        { key: 'undo', label: 'Undo', icon: <Undo2 size={16} strokeWidth={1.8} />, onClick: undo, disabled: !canUndo },
+        { key: 'redo', label: 'Redo', icon: <Redo2 size={16} strokeWidth={1.8} />, onClick: redo, disabled: !canRedo },
       ],
     },
     {
       key: 'layers',
       label: 'Layer Order',
       commands: [
-        { key: 'forward', label: 'Bring forward', icon: <ForwardIcon />, onClick: handleBringForward, disabled: selectedCount === 0 },
-        { key: 'backward', label: 'Send backward', icon: <BackwardIcon />, onClick: handleSendBackward, disabled: selectedCount === 0 },
-        { key: 'front', label: 'Bring to front', icon: <FrontIcon />, onClick: handleBringToFront, disabled: selectedCount === 0 },
-        { key: 'back', label: 'Send to back', icon: <BackIcon />, onClick: handleSendToBack, disabled: selectedCount === 0 },
+        {
+          key: 'forward',
+          label: 'Bring forward',
+          icon: <ChevronUp size={16} strokeWidth={1.8} />,
+          onClick: handleBringForward,
+          disabled: selectedCount === 0,
+        },
+        {
+          key: 'backward',
+          label: 'Send backward',
+          icon: <ChevronDown size={16} strokeWidth={1.8} />,
+          onClick: handleSendBackward,
+          disabled: selectedCount === 0,
+        },
+        {
+          key: 'front',
+          label: 'Bring to front',
+          icon: <ArrowUpToLine size={16} strokeWidth={1.8} />,
+          onClick: handleBringToFront,
+          disabled: selectedCount === 0,
+        },
+        {
+          key: 'back',
+          label: 'Send to back',
+          icon: <ArrowDownToLine size={16} strokeWidth={1.8} />,
+          onClick: handleSendToBack,
+          disabled: selectedCount === 0,
+        },
       ],
     },
   ]
@@ -442,143 +523,5 @@ function ToolbarIconButton({ label, icon, onClick, disabled, variant = 'ghost', 
       </span>
       <span className="sr-only">{ariaLabel}</span>
     </button>
-  )
-}
-
-const iconProps = {
-  viewBox: '0 0 24 24',
-  fill: 'none',
-  stroke: 'currentColor',
-  strokeWidth: 1.8,
-  strokeLinecap: 'round',
-  strokeLinejoin: 'round',
-} satisfies SVGProps<SVGSVGElement>
-
-function RectangleIcon() {
-  return (
-    <svg {...iconProps}>
-      <rect x="5" y="7" width="14" height="10" rx="2" />
-    </svg>
-  )
-}
-
-function EllipseIcon() {
-  return (
-    <svg {...iconProps}>
-      <ellipse cx="12" cy="12" rx="6.5" ry="8" />
-    </svg>
-  )
-}
-
-function TriangleIcon() {
-  return (
-    <svg {...iconProps}>
-      <polygon points="12 5 19 19 5 19" />
-    </svg>
-  )
-}
-
-function ImageIcon() {
-  return (
-    <svg {...iconProps}>
-      <rect x="4" y="6" width="16" height="12" rx="2" />
-      <circle cx="9" cy="10" r="1.5" />
-      <path d="M21 15l-4.5-4.5a1 1 0 0 0-1.4 0L9 17" />
-    </svg>
-  )
-}
-
-function UndoIcon() {
-  return (
-    <svg {...iconProps}>
-      <path d="M9 14 4 9l5-5" />
-      <path d="M4 9h11a4 4 0 1 1 0 8h-1" />
-    </svg>
-  )
-}
-
-function RedoIcon() {
-  return (
-    <svg {...iconProps}>
-      <path d="m15 14 5-5-5-5" />
-      <path d="M20 9H9a4 4 0 1 0 0 8h1" />
-    </svg>
-  )
-}
-
-function ForwardIcon() {
-  return (
-    <svg {...iconProps}>
-      <polyline points="12 5 19 12 12 19" />
-      <line x1="5" y1="12" x2="19" y2="12" />
-    </svg>
-  )
-}
-
-function BackwardIcon() {
-  return (
-    <svg {...iconProps}>
-      <polyline points="12 5 5 12 12 19" />
-      <line x1="5" y1="12" x2="19" y2="12" />
-    </svg>
-  )
-}
-
-function FrontIcon() {
-  return (
-    <svg {...iconProps}>
-      <rect x="6" y="6" width="12" height="12" />
-      <rect x="9" y="9" width="12" height="12" />
-    </svg>
-  )
-}
-
-function BackIcon() {
-  return (
-    <svg {...iconProps}>
-      <rect x="6" y="6" width="12" height="12" />
-      <rect x="3" y="9" width="12" height="12" />
-    </svg>
-  )
-}
-
-function LockIcon() {
-  return (
-    <svg {...iconProps}>
-      <rect x="5" y="11" width="14" height="9" rx="2" />
-      <path d="M9 11V8a3 3 0 1 1 6 0v3" />
-    </svg>
-  )
-}
-
-function UnlockIcon() {
-  return (
-    <svg {...iconProps}>
-      <rect x="5" y="11" width="14" height="9" rx="2" />
-      <path d="M15 11V8a3 3 0 0 0-6 0" />
-    </svg>
-  )
-}
-
-function LockMixedIcon() {
-  return (
-    <svg {...iconProps}>
-      <rect x="5" y="11" width="14" height="9" rx="2" />
-      <path d="M12 7v4" />
-      <path d="M9 11V8a3 3 0 0 1 3-3" />
-      <path d="M15 11V8a3 3 0 0 0-3-3" />
-    </svg>
-  )
-}
-
-function TrashIcon() {
-  return (
-    <svg {...iconProps}>
-      <polyline points="3 6 5 6 21 6" />
-      <path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
-      <path d="M19 6v13a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6" />
-      <line x1="10" y1="11" x2="10" y2="17" />
-      <line x1="14" y1="11" x2="14" y2="17" />
-    </svg>
   )
 }

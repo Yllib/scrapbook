@@ -128,6 +128,8 @@ describe('scene store', () => {
     expect(imageNode.size.height).toBeCloseTo(128)
     expect(imageNode.image?.grid?.columns).toBe(2)
     expect(imageNode.image?.grid?.rows).toBe(1)
+    expect(imageNode.image?.tileLevels?.[0]).toEqual({ z: 0, columns: 2, rows: 1 })
+    expect(imageNode.image?.maxTileLevel).toBe(0)
   })
 
   it('translates selection with undo/redo support', () => {

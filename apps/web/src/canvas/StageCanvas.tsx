@@ -13,6 +13,7 @@ import {
   calculateSelectionHandleSizing,
   type SelectionOverlayGeometry,
 } from './selectionOverlay'
+import { pickTileLevel } from '../tiles/tileLevels'
 
 const DPR_CAP = 1.5
 const MIN_ZOOM = 1e-6
@@ -104,13 +105,14 @@ interface NodeVisual {
   image?: Sprite
   tileContainer?: Container
   tiles?: Map<string, Sprite>
+  activeTileLevel?: number
 }
 
 function clamp(value: number, min: number, max: number) {
   return Math.min(Math.max(value, min), max)
 }
 
-function createGridTexture(size = GRID_SIZE) {
+function createGridTexture(size = GRID_SIZE, background = '#0f172a') {
   const canvas = document.createElement('canvas')
   canvas.width = size
   canvas.height = size
@@ -119,7 +121,7 @@ function createGridTexture(size = GRID_SIZE) {
     throw new Error('Unable to acquire 2D context for grid texture')
   }
 
-  ctx.fillStyle = '#0f172a'
+  ctx.fillStyle = background
   ctx.fillRect(0, 0, size, size)
 
   ctx.strokeStyle = 'rgba(255, 255, 255, 0.85)'
@@ -359,9 +361,10 @@ export function StageCanvas() {
     }
 
     const setup = async () => {
+      const initialBackground = useSceneStore.getState().backgroundColor ?? '#020617'
       try {
         await app.init({
-          background: '#020617',
+          background: initialBackground,
           resizeTo: host,
           antialias: true,
           autoDensity: true,
@@ -385,7 +388,7 @@ export function StageCanvas() {
       view.style.height = '100%'
       view.style.touchAction = 'none'
 
-      cleanupScene = configureScene(app, host, view, setUnlockMenu)
+      cleanupScene = configureScene(app, host, view, setUnlockMenu, initialBackground)
     }
 
     setup()
@@ -419,13 +422,14 @@ function configureScene(
   host: HTMLDivElement,
   view: HTMLCanvasElement,
   setUnlockMenu: (value: { x: number; y: number; nodeId: string; name: string } | null) => void,
+  initialBackground: string,
 ) {
   const storeApi = useSceneStore
   const world = new Container()
   world.sortableChildren = true
   const overlay = new Container()
   overlay.eventMode = 'none'
-  const gridTexture = createGridTexture()
+  const gridTexture = createGridTexture(GRID_SIZE, initialBackground)
   const grid = new TilingSprite({
     texture: gridTexture,
     width: app.renderer.width,
@@ -436,6 +440,7 @@ function configureScene(
   app.stage.addChild(grid)
   app.stage.addChild(world)
   app.stage.addChild(overlay)
+  grid.visible = storeApi.getState().showGrid
 
   const { setCapture, releaseCapture } = createPointerCaptureHelpers(view)
 
@@ -449,13 +454,26 @@ function configureScene(
   marquee.visible = false
   overlay.addChild(marquee)
 
-  addOriginMarker(world)
+  const originMarker = addOriginMarker(world)
+  originMarker.visible = storeApi.getState().showOrigin
+  grid.visible = storeApi.getState().showGrid
 
   world.position.set(app.renderer.width / 2, app.renderer.height / 2)
   view.style.cursor = 'default'
 
   const nodeVisuals = new Map<string, NodeVisual>()
   let selectedIdSet = new Set(storeApi.getState().selectedIds)
+
+  const refreshImageLODs = () => {
+    const scale = world.scale.x
+    nodeVisuals.forEach((visual) => {
+      if (visual.node.type === 'image') {
+        renderImageTiles(visual, visual.node, scale)
+      }
+    })
+  }
+
+  let lastWorldScale = world.scale.x
 
   const pointer = {
     pointerId: null as number | null,
@@ -605,8 +623,8 @@ function configureScene(
     grid.height = app.renderer.height
     grid.tileScale.set(world.scale.x, world.scale.y)
     grid.tilePosition.set(
-      -world.position.x / world.scale.x,
-      -world.position.y / world.scale.y,
+      world.position.x / world.scale.x,
+      world.position.y / world.scale.y,
     )
   }
 
@@ -778,7 +796,7 @@ function configureScene(
       visual.container.zIndex = index
     }
 
-    renderNodeVisual(visual, node)
+    renderNodeVisual(visual, node, world.scale.x)
   }
 
   const removeNodeVisual = (id: string) => {
@@ -820,9 +838,29 @@ function configureScene(
       selectedIdSet = new Set(state.selectedIds)
       redrawSelection()
     }
+    if (state.showGrid !== prevState.showGrid) {
+      grid.visible = state.showGrid
+    }
+    if (state.showOrigin !== prevState.showOrigin) {
+      originMarker.visible = state.showOrigin
+    }
+    if (state.backgroundColor !== prevState.backgroundColor) {
+      const color = hexColorToNumber(state.backgroundColor, 0x020617)
+      app.renderer.background.color = color
+      const newTexture = createGridTexture(GRID_SIZE, state.backgroundColor ?? '#020617')
+      grid.texture.destroy(true)
+      grid.texture = newTexture
+      grid.tileScale.set(world.scale.x, world.scale.y)
+    }
   })
 
-  const ticker = () => updateGrid()
+  const ticker = () => {
+    updateGrid()
+    if (Math.abs(world.scale.x - lastWorldScale) > 1e-4) {
+      refreshImageLODs()
+      lastWorldScale = world.scale.x
+    }
+  }
   app.ticker.add(ticker)
 
   const getScreenPoint = (event: PointerEvent): Vec2 => {
@@ -880,6 +918,8 @@ function configureScene(
       if (touchPointers.size >= 2) {
         resetTouchGestureReference()
       }
+      lastWorldScale = world.scale.x
+      refreshImageLODs()
       syncWorldTransform()
     }
   }
@@ -926,6 +966,8 @@ function configureScene(
     )
     normalizeWorldScale()
     syncWorldTransform()
+    lastWorldScale = world.scale.x
+    refreshImageLODs()
     redrawSelection()
 
     if (touchPointers.size >= 2) {
@@ -1479,6 +1521,8 @@ function configureScene(
     world.position.set(cursorX - worldCursorX * targetScale, cursorY - worldCursorY * targetScale)
     normalizeWorldScale()
     syncWorldTransform()
+    lastWorldScale = world.scale.x
+    refreshImageLODs()
     redrawSelection()
   }
 
@@ -1620,7 +1664,7 @@ function ensureTileContainer(visual: NodeVisual) {
   return visual.tileContainer
 }
 
-function renderNodeVisual(visual: NodeVisual, node: SceneNode) {
+function renderNodeVisual(visual: NodeVisual, node: SceneNode, worldScale: number) {
   visual.node = node
   visual.container.position.set(node.position.x, node.position.y)
   visual.container.rotation = node.rotation
@@ -1650,7 +1694,7 @@ function renderNodeVisual(visual: NodeVisual, node: SceneNode) {
           console.error('[stage] failed to load asset texture', node.image?.assetId, error)
         })
     }
-    renderImageTiles(visual, node)
+    renderImageTiles(visual, node, worldScale)
     return
   }
 
@@ -1692,26 +1736,49 @@ function renderNodeVisual(visual: NodeVisual, node: SceneNode) {
   }
 }
 
-function renderImageTiles(visual: NodeVisual, node: SceneNode) {
+function renderImageTiles(visual: NodeVisual, node: SceneNode, worldScale: number) {
   if (!node.image) return
   const intrinsicWidth = Math.max(1, node.image.intrinsicSize.width)
   const intrinsicHeight = Math.max(1, node.image.intrinsicSize.height)
   const tileSize = node.image.tileSize ?? TILE_PIXEL_SIZE
+  const derivedMaxLevel =
+    node.image.tileLevels && node.image.tileLevels.length > 0
+      ? node.image.tileLevels[node.image.tileLevels.length - 1].z
+      : 0
+  const maxLevel = node.image.maxTileLevel ?? derivedMaxLevel
+  const safeScale = Math.max(worldScale, Number.EPSILON)
+  const baseDensityX = (node.size.width * safeScale) / intrinsicWidth
+  const baseDensityY = (node.size.height * safeScale) / intrinsicHeight
+  const baseDensity = Math.min(baseDensityX, baseDensityY)
+  const targetLevel = maxLevel > 0 ? pickTileLevel(baseDensity, maxLevel) : 0
+  const levelScaleFactor = 2 ** targetLevel
+  const levelWidth = Math.max(1, Math.ceil(intrinsicWidth / levelScaleFactor))
+  const levelHeight = Math.max(1, Math.ceil(intrinsicHeight / levelScaleFactor))
+  const levelInfo = node.image.tileLevels?.find((level) => level.z === targetLevel)
+  const cols = levelInfo?.columns ?? Math.max(1, Math.ceil(levelWidth / tileSize))
+  const rows = levelInfo?.rows ?? Math.max(1, Math.ceil(levelHeight / tileSize))
   const container = ensureTileContainer(visual)
   const tiles = visual.tiles ?? new Map<string, Sprite>()
   visual.tiles = tiles
   container.visible = true
 
-  const cols = node.image.grid?.columns ?? Math.max(1, Math.ceil(intrinsicWidth / tileSize))
-  const rows = node.image.grid?.rows ?? Math.max(1, Math.ceil(intrinsicHeight / tileSize))
-  const needed = new Set<string>()
+  if (visual.activeTileLevel !== targetLevel) {
+    tiles.forEach((sprite, key) => {
+      if (!key.startsWith(`${targetLevel}:`)) {
+        sprite.destroy()
+        tiles.delete(key)
+      }
+    })
+    visual.activeTileLevel = targetLevel
+  }
 
-  const scaleX = node.size.width / intrinsicWidth
-  const scaleY = node.size.height / intrinsicHeight
+  const needed = new Set<string>()
+  const levelWorldScaleX = (node.size.width / intrinsicWidth) * levelScaleFactor
+  const levelWorldScaleY = (node.size.height / intrinsicHeight) * levelScaleFactor
 
   for (let y = 0; y < rows; y += 1) {
     for (let x = 0; x < cols; x += 1) {
-      const key = `${x},${y}`
+      const key = `${targetLevel}:${x},${y}`
       needed.add(key)
       let sprite = tiles.get(key)
       if (!sprite) {
@@ -1722,32 +1789,32 @@ function renderImageTiles(visual: NodeVisual, node: SceneNode) {
         container.addChild(sprite)
       }
 
-      const originalWidth = Math.min(tileSize, intrinsicWidth - x * tileSize)
-      const originalHeight = Math.min(tileSize, intrinsicHeight - y * tileSize)
-      const displayWidth = Math.max(1, originalWidth * scaleX)
-      const displayHeight = Math.max(1, originalHeight * scaleY)
-      const offsetX = -node.size.width / 2 + x * tileSize * scaleX + displayWidth / 2
-      const offsetY = -node.size.height / 2 + y * tileSize * scaleY + displayHeight / 2
+      const levelTileWidth = Math.max(1, Math.min(tileSize, levelWidth - x * tileSize))
+      const levelTileHeight = Math.max(1, Math.min(tileSize, levelHeight - y * tileSize))
+      const displayWidth = Math.max(1, levelTileWidth * levelWorldScaleX)
+      const displayHeight = Math.max(1, levelTileHeight * levelWorldScaleY)
+      const offsetX = -node.size.width / 2 + x * tileSize * levelWorldScaleX + displayWidth / 2
+      const offsetY = -node.size.height / 2 + y * tileSize * levelWorldScaleY + displayHeight / 2
 
       sprite.position.set(offsetX, offsetY)
       sprite.width = displayWidth
       sprite.height = displayHeight
 
-      const cachedKey = `${node.image.assetId}:0:${x}:${y}`
-      const cached = tileTextureCache.get(cachedKey)
+      const cacheKey = `${node.image.assetId}:${targetLevel}:${x}:${y}`
+      const cached = tileTextureCache.get(cacheKey)
       if (cached) {
         sprite.texture = cached
       } else {
         sprite.texture = Texture.WHITE
-        fetchTileTexture(node.image.assetId, 0, x, y)
+        fetchTileTexture(node.image.assetId, targetLevel, x, y)
           .then((texture: Texture) => {
-            tileTextureCache.set(cachedKey, texture)
+            tileTextureCache.set(cacheKey, texture)
             if (!sprite.destroyed) {
               sprite.texture = texture
             }
           })
           .catch((error: unknown) => {
-            console.error('[stage] failed to load tile texture', node.image?.assetId, x, y, error)
+            console.error('[stage] failed to load tile texture', node.image?.assetId, targetLevel, x, y, error)
           })
       }
     }
@@ -1791,18 +1858,23 @@ function drawSelectionOverlay(visual: NodeVisual, worldScale: number, isSelected
 }
 
 function addOriginMarker(world: Container) {
+  const marker = new Container()
+  marker.zIndex = -1000
+
   const crosshair = new Graphics()
   crosshair.stroke({ width: 2, color: 0x38bdf8, alpha: 0.8 })
   crosshair.moveTo(-80, 0)
   crosshair.lineTo(80, 0)
   crosshair.moveTo(0, -80)
   crosshair.lineTo(0, 80)
-  crosshair.zIndex = -1000
+  crosshair.zIndex = -2
 
   const center = new Graphics()
   center.circle(0, 0, 8).fill(0x38bdf8)
-  center.zIndex = -999
+  center.zIndex = -1
 
-  world.addChild(crosshair)
-  world.addChild(center)
+  marker.addChild(crosshair)
+  marker.addChild(center)
+  world.addChild(marker)
+  return marker
 }

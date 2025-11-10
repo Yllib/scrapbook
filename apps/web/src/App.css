@@ -312,11 +312,82 @@ body {
 }
 
 .scene-debug header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
   font-weight: 600;
   font-size: 12px;
   letter-spacing: 0.08em;
   text-transform: uppercase;
   color: rgba(148, 163, 184, 0.9);
+}
+
+.scene-node-settings {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.scene-node-settings-button {
+  width: 30px;
+  height: 30px;
+  border-radius: 999px;
+  border: 1px solid rgba(148, 163, 184, 0.35);
+  background: rgba(15, 23, 42, 0.4);
+  color: rgba(226, 232, 240, 0.9);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: border-color 0.2s ease, color 0.2s ease, background 0.2s ease;
+}
+
+.scene-node-settings-button:hover {
+  border-color: rgba(56, 189, 248, 0.8);
+  color: #38bdf8;
+}
+
+.scene-node-settings-button svg {
+  pointer-events: none;
+}
+
+.scene-settings-menu {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  min-width: 190px;
+  padding: 12px;
+  border-radius: 12px;
+  background: rgba(2, 6, 23, 0.95);
+  border: 1px solid rgba(56, 189, 248, 0.15);
+  box-shadow: 0 14px 32px rgba(2, 6, 23, 0.6);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  z-index: 20;
+}
+
+.scene-settings-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 12px;
+  color: rgba(226, 232, 240, 0.9);
+}
+
+.scene-settings-item--toggle input[type='checkbox'] {
+  accent-color: #38bdf8;
+}
+
+.scene-settings-item--color input[type='color'] {
+  width: 34px;
+  height: 20px;
+  padding: 0;
+  border: none;
+  background: transparent;
+  cursor: pointer;
 }
 
 .scene-debug ol {

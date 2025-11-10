@@ -1,4 +1,10 @@
 import { create } from 'zustand'
+import {
+  deriveSingleLevel,
+  maxTileLevel as getMaxTileLevel,
+  normalizeTileLevels,
+  type TileLevelDefinition,
+} from '../tiles/tileLevels'
 
 export type SceneNodeType = 'shape' | 'image'
 export type ShapeType = 'rectangle' | 'ellipse' | 'polygon'
@@ -39,6 +45,8 @@ export interface ImageDefinition {
     columns: number
     rows: number
   }
+  tileLevels?: TileLevelDefinition[]
+  maxTileLevel?: number
 }
 
 export type ShapeDefinition =
@@ -101,6 +109,9 @@ interface SceneState {
   lastSelectedId: string | null
   world: WorldTransform
   viewport: Viewport
+  showGrid: boolean
+  showOrigin: boolean
+  backgroundColor: string
   createRectangleNode: (overrides?: Partial<Omit<SceneNode, 'type'>>) => SceneNode
   createShapeNode: (shape: ShapeDefinition, overrides?: Partial<Omit<SceneNode, 'type' | 'shape'>>) => SceneNode
   createImageNode: (
@@ -134,6 +145,9 @@ interface SceneState {
   undo: () => void
   redo: () => void
   history: HistoryState
+  setShowGrid: (visible: boolean) => void
+  setShowOrigin: (visible: boolean) => void
+  setBackgroundColor: (color: string) => void
 }
 
 const unique = (values: string[]) => {
@@ -207,6 +221,8 @@ const cloneNode = (node: SceneNode): SceneNode => ({
         intrinsicSize: { ...node.image.intrinsicSize },
         tileSize: node.image.tileSize,
         grid: node.image.grid ? { ...node.image.grid } : undefined,
+        tileLevels: node.image.tileLevels ? node.image.tileLevels.map((level) => ({ ...level })) : undefined,
+        maxTileLevel: node.image.maxTileLevel,
       }
     : undefined,
   stroke: node.stroke ? { ...node.stroke } : undefined,
@@ -255,6 +271,9 @@ export const useSceneStore = create<SceneState>((set, get) => ({
     future: [],
     recording: false,
   },
+  showGrid: true,
+  showOrigin: true,
+  backgroundColor: '#020617',
   createRectangleNode: (overrides = {}) => {
     const state = get()
     const center = overrides.position ?? state.getWorldCenter()
@@ -326,10 +345,19 @@ export const useSceneStore = create<SceneState>((set, get) => ({
       height: image.intrinsicSize?.height ?? DEFAULT_RECT_SIZE.height,
     }
     const tileSize = image.tileSize ?? DEFAULT_TILE_SIZE
-    const grid = image.grid ?? {
-      columns: Math.max(1, Math.ceil(intrinsic.width / tileSize)),
-      rows: Math.max(1, Math.ceil(intrinsic.height / tileSize)),
-    }
+    const normalizedTileLevels = normalizeTileLevels(
+      image.tileLevels ?? deriveSingleLevel(intrinsic.width, intrinsic.height, tileSize),
+    )
+    const zeroLevel = normalizedTileLevels.find((level) => level.z === 0)
+    const grid =
+      image.grid ??
+      (zeroLevel
+        ? { columns: zeroLevel.columns, rows: zeroLevel.rows }
+        : {
+            columns: Math.max(1, Math.ceil(intrinsic.width / tileSize)),
+            rows: Math.max(1, Math.ceil(intrinsic.height / tileSize)),
+          })
+    const maxTileLevel = image.maxTileLevel ?? getMaxTileLevel(normalizedTileLevels)
     const size = overrides.size ?? {
       width: intrinsic.width * factor,
       height: intrinsic.height * factor,
@@ -347,6 +375,8 @@ export const useSceneStore = create<SceneState>((set, get) => ({
         intrinsicSize: { ...intrinsic },
         tileSize,
         grid,
+        tileLevels: normalizedTileLevels,
+        maxTileLevel,
       },
       fill: overrides.fill,
       stroke: overrides.stroke,
@@ -782,6 +812,23 @@ export const useSceneStore = create<SceneState>((set, get) => ({
           recording: false,
         },
       }
+    }),
+  setShowGrid: (visible) =>
+    set((prev) => {
+      if (prev.showGrid === visible) return prev
+      return { ...prev, showGrid: visible }
+    }),
+  setShowOrigin: (visible) =>
+    set((prev) => {
+      if (prev.showOrigin === visible) return prev
+      return { ...prev, showOrigin: visible }
+    }),
+  setBackgroundColor: (color) =>
+    set((prev) => {
+      const trimmed = color?.trim()
+      if (!trimmed) return prev
+      if (prev.backgroundColor === trimmed) return prev
+      return { ...prev, backgroundColor: trimmed }
     }),
   getWorldCenter: () => {
     const { viewport, world } = get()

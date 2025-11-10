@@ -1,4 +1,14 @@
-import { useCallback, useMemo, useState, type ChangeEvent, type FormEvent, type KeyboardEvent } from 'react'
+import {
+  useCallback,
+  useMemo,
+  useState,
+  useEffect,
+  useRef,
+  type ChangeEvent,
+  type FormEvent,
+  type KeyboardEvent as ReactKeyboardEvent,
+} from 'react'
+import { Settings } from 'lucide-react'
 import { useSceneStore } from '../state/scene'
 import { useDialogStore } from '../state/dialog'
 
@@ -8,9 +18,17 @@ export function SceneNodeList() {
   const setSelection = useSceneStore((state) => state.setSelection)
   const deleteNodes = useSceneStore((state) => state.deleteNodes)
   const renameNode = useSceneStore((state) => state.renameNode)
+  const showGrid = useSceneStore((state) => state.showGrid)
+  const setShowGrid = useSceneStore((state) => state.setShowGrid)
+  const showOrigin = useSceneStore((state) => state.showOrigin)
+  const setShowOrigin = useSceneStore((state) => state.setShowOrigin)
+  const backgroundColor = useSceneStore((state) => state.backgroundColor)
+  const setBackgroundColor = useSceneStore((state) => state.setBackgroundColor)
   const requestConfirm = useDialogStore((state) => state.requestConfirm)
   const [editingId, setEditingId] = useState<string | null>(null)
   const [editingValue, setEditingValue] = useState('')
+  const [settingsOpen, setSettingsOpen] = useState(false)
+  const settingsRef = useRef<HTMLDivElement>(null)
 
   const items = useMemo(() => {
     const selectedSet = new Set(selectedIds)
@@ -85,7 +103,7 @@ export function SceneNodeList() {
   )
 
   const handleRenameKeyDown = useCallback(
-    (event: KeyboardEvent<HTMLInputElement>) => {
+    (event: ReactKeyboardEvent<HTMLInputElement>) => {
       if (event.key === 'Escape') {
         event.preventDefault()
         cancelRename()
@@ -97,10 +115,88 @@ export function SceneNodeList() {
     [cancelRename, commitRename],
   )
 
+  const handleToggleGrid = useCallback(() => {
+    setShowGrid(!showGrid)
+  }, [setShowGrid, showGrid])
+
+  const handleToggleOrigin = useCallback(() => {
+    setShowOrigin(!showOrigin)
+  }, [setShowOrigin, showOrigin])
+
+  const handleBackgroundChange = useCallback(
+    (event: ChangeEvent<HTMLInputElement>) => {
+      const next = event.target.value || '#020617'
+      setBackgroundColor(next)
+    },
+    [setBackgroundColor],
+  )
+
+  useEffect(() => {
+    if (!settingsOpen) return undefined
+    const handlePointerDown = (event: PointerEvent) => {
+      if (!settingsRef.current) return
+      const target = event.target as Node | null
+      if (target && !settingsRef.current.contains(target)) {
+        setSettingsOpen(false)
+      }
+    }
+    document.addEventListener('pointerdown', handlePointerDown)
+    return () => {
+      document.removeEventListener('pointerdown', handlePointerDown)
+    }
+  }, [settingsOpen])
+
+  useEffect(() => {
+    if (!settingsOpen) return undefined
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        setSettingsOpen(false)
+      }
+    }
+    window.addEventListener('keydown', handleKeyDown)
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown)
+    }
+  }, [settingsOpen])
+
+  const header = (
+    <header>
+      <span>Scene Nodes</span>
+      <div className="scene-node-settings" ref={settingsRef}>
+        <button
+          type="button"
+          className="scene-node-settings-button"
+          onClick={() => setSettingsOpen((open) => !open)}
+          aria-haspopup="true"
+          aria-expanded={settingsOpen}
+          aria-label="Scene settings"
+        >
+          <Settings size={18} strokeWidth={1.6} aria-hidden="true" />
+        </button>
+        {settingsOpen && (
+          <div className="scene-settings-menu" role="menu">
+            <label className="scene-settings-item scene-settings-item--toggle">
+              <input type="checkbox" checked={showGrid} onChange={handleToggleGrid} />
+              <span>Show grid</span>
+            </label>
+            <label className="scene-settings-item scene-settings-item--toggle">
+              <input type="checkbox" checked={showOrigin} onChange={handleToggleOrigin} />
+              <span>Show origin</span>
+            </label>
+            <label className="scene-settings-item scene-settings-item--color">
+              <span>Background</span>
+              <input type="color" value={backgroundColor} onChange={handleBackgroundChange} />
+            </label>
+          </div>
+        )}
+      </div>
+    </header>
+  )
+
   if (items.length === 0) {
     return (
       <div className="scene-debug">
-        <header>Scene Nodes</header>
+        {header}
         <p className="empty">No nodes yet — add one to get started.</p>
       </div>
     )
@@ -108,7 +204,7 @@ export function SceneNodeList() {
 
   return (
     <div className="scene-debug">
-      <header>Scene Nodes</header>
+      {header}
       <ol>
         {[...items].reverse().map((item) => (
           <li
