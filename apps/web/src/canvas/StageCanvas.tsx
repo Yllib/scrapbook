@@ -24,6 +24,7 @@ const DRAG_THRESHOLD = 4
 const SELECTION_COLOR = 0x38bdf8
 const HANDLE_HIT_PADDING = 2
 const HANDLE_HIT_MIN_PX = 18
+const MIN_HALF_SIZE = 1
 const DEFAULT_FILL_COLOR = 0x38bdf8
 const DEFAULT_STROKE_COLOR = 0x0ea5e9
 const DEFAULT_POLYGON_POINTS: Vec2[] = [
@@ -186,6 +187,14 @@ function toLocal(overlay: SelectionOverlayGeometry, worldPoint: Vec2): Vec2 {
   return rotateVector(rel, -overlay.rotation)
 }
 
+function worldPointToLocalPoint(worldPoint: Vec2, origin: Vec2, rotation: number): Vec2 {
+  const rel = {
+    x: worldPoint.x - origin.x,
+    y: worldPoint.y - origin.y,
+  }
+  return rotateVector(rel, -rotation)
+}
+
 function isPointInsideOverlay(overlay: SelectionOverlayGeometry, worldPoint: Vec2) {
   const local = toLocal(overlay, worldPoint)
   return Math.abs(local.x) <= overlay.width / 2 && Math.abs(local.y) <= overlay.height / 2
@@ -203,6 +212,41 @@ function isPointInPolygon(point: Vec2, polygon: Vec2[]): boolean {
     if (intersects) inside = !inside
   }
   return inside
+}
+
+function cloneSceneNode(node: SceneNode): SceneNode {
+  return {
+    ...node,
+    position: { ...node.position },
+    size: { ...node.size },
+    shape: node.shape
+      ? node.shape.kind === 'polygon'
+        ? { kind: 'polygon', points: node.shape.points.map((point) => ({ ...point })) }
+        : node.shape.kind === 'rectangle'
+          ? { kind: 'rectangle', cornerRadius: node.shape.cornerRadius }
+          : { kind: 'ellipse' }
+      : undefined,
+    image: node.image
+      ? {
+          assetId: node.image.assetId,
+          intrinsicSize: { ...node.image.intrinsicSize },
+          tileSize: node.image.tileSize,
+          grid: node.image.grid ? { ...node.image.grid } : undefined,
+        }
+      : undefined,
+    stroke: node.stroke ? { ...node.stroke } : undefined,
+    fill: node.fill,
+    aspectRatioLocked: node.aspectRatioLocked,
+    locked: node.locked,
+    rotation: node.rotation,
+    type: node.type,
+    id: node.id,
+    name: node.name,
+  }
+}
+
+function cloneSceneNodes(nodes: SceneNode[]) {
+  return nodes.map((node) => cloneSceneNode(node))
 }
 
 function distanceBetween(a: Vec2, b: Vec2) {
@@ -422,10 +466,16 @@ function configureScene(
     toggle: false,
     hasDragged: false,
     transformCenter: { x: 0, y: 0 },
-    lastScaleDistance: 0,
     lastAngle: 0,
     activeHandle: null as HandleType | null,
     transformStarted: false,
+    scaleStartLocal: { x: 1, y: 1 },
+    scaleStartHalf: { width: 1, height: 1 },
+    scaleLastAbsolute: { x: 1, y: 1 },
+    scaleBaseNodes: null as SceneNode[] | null,
+    scaleRotation: 0,
+    scaleAxis: 'both' as 'both' | 'x' | 'y',
+    aspectLock: false,
   }
 
   const touchPointers = new Map<number, Vec2>()
@@ -505,7 +555,11 @@ function configureScene(
         view.style.cursor = 'grabbing'
         return
       case 'transform-scale':
-        view.style.cursor = pointer.activeHandle === 'edge' ? 'ns-resize' : 'nwse-resize'
+        if (pointer.activeHandle === 'edge') {
+          view.style.cursor = pointer.scaleAxis === 'x' ? 'ew-resize' : 'ns-resize'
+        } else {
+          view.style.cursor = 'nwse-resize'
+        }
         return
       case 'transform-rotate':
         view.style.cursor = 'grabbing'
@@ -629,12 +683,77 @@ function configureScene(
     return null
   }
 
+  function signOrOne(value: number) {
+    return Math.sign(value) || 1
+  }
+
+  function getScaleAnchorPoint(
+    overlayGeometry: SelectionOverlayGeometry,
+    handle: HandleType,
+    handleLocalPoint: Vec2,
+    axis: 'both' | 'x' | 'y',
+  ): Vec2 {
+    const halfWidth = overlayGeometry.width / 2
+    const halfHeight = overlayGeometry.height / 2
+
+    if (handle === 'corner') {
+      const anchorLocal = {
+        x: -signOrOne(handleLocalPoint.x) * halfWidth,
+        y: -signOrOne(handleLocalPoint.y) * halfHeight,
+      }
+      return toWorld(overlayGeometry, anchorLocal)
+    }
+
+    if (handle === 'edge') {
+      if (axis === 'x') {
+        const anchorLocal = {
+          x: -signOrOne(handleLocalPoint.x) * halfWidth,
+          y: 0,
+        }
+        return toWorld(overlayGeometry, anchorLocal)
+      }
+      const anchorLocal = {
+        x: 0,
+        y: -signOrOne(handleLocalPoint.y) * halfHeight,
+      }
+      return toWorld(overlayGeometry, anchorLocal)
+    }
+
+    return { ...overlayGeometry.center }
+  }
+
+  const isSelectionAspectLocked = () => {
+    const state = storeApi.getState()
+    if (state.selectedIds.length === 0) {
+      return false
+    }
+    const selectedSet = new Set(state.selectedIds)
+    let found = false
+    for (const node of state.nodes) {
+      if (!selectedSet.has(node.id)) continue
+      if (!node.aspectRatioLocked) {
+        return false
+      }
+      found = true
+    }
+    return found
+  }
+
   const redrawSelection = () => {
     const scale = world.scale.x
     nodeVisuals.forEach((visual, id) => {
       drawSelectionOverlay(visual, scale, selectedIdSet.has(id))
     })
     updateGroupSelectionOverlay()
+  }
+
+  const resetNodesToScaleBaseline = () => {
+    const baseline = pointer.scaleBaseNodes
+    if (!baseline) return
+    storeApi.setState((prev) => ({
+      ...prev,
+      nodes: cloneSceneNodes(baseline),
+    }))
   }
 
   const upsertNodeVisual = (node: SceneNode, index: number) => {
@@ -1006,40 +1125,63 @@ function configureScene(
 
       if (handle === 'corner' || handle === 'edge') {
         pointer.mode = 'transform-scale'
-        pointer.transformCenter = { ...overlayGeometry.center }
-        pointer.lastScaleDistance = Math.max(
-          distanceBetween(worldPoint, overlayGeometry.center),
-          1e-4,
-        )
+        pointer.scaleRotation = overlayGeometry.rotation
+        pointer.aspectLock = isSelectionAspectLocked()
+        pointer.scaleBaseNodes = cloneSceneNodes(storeApi.getState().nodes)
+        const localPoint = toLocal(overlayGeometry, worldPoint)
+        pointer.scaleAxis =
+          handle === 'edge'
+            ? Math.abs(localPoint.x) > Math.abs(localPoint.y)
+              ? 'x'
+              : 'y'
+            : 'both'
+        const anchor = pointer.aspectLock
+          ? { ...overlayGeometry.center }
+          : getScaleAnchorPoint(overlayGeometry, handle, localPoint, pointer.scaleAxis)
+        pointer.transformCenter = { ...anchor }
+        pointer.scaleStartHalf = {
+          width: Math.max(overlayGeometry.width / 2, MIN_HALF_SIZE),
+          height: Math.max(overlayGeometry.height / 2, MIN_HALF_SIZE),
+        }
+        const initialLocal = worldPointToLocalPoint(worldPoint, pointer.transformCenter, pointer.scaleRotation)
+        const clampLocalValue = (value: number) =>
+          Math.abs(value) > 1e-4 ? value : Math.sign(value || 1) * 1e-4
+        const clampedX = clampLocalValue(initialLocal.x)
+        const clampedY = clampLocalValue(initialLocal.y)
+        pointer.scaleStartLocal = { x: clampedX, y: clampedY }
+        pointer.scaleLastAbsolute = { x: 1, y: 1 }
         pointer.hasDragged = true
         pointer.activeHandle = handle
+        pointer.transformStarted = false
+        pointer.lastWorld = worldPoint
         hoveredHandle = handle
         hoveredNodeId = null
         updateCursor()
         return
       }
+    }
 
-      if (insideOverlay && state.selectedIds.length > 0) {
-        pointer.mode = 'transform-translate'
-        pointer.transformCenter = { ...overlayGeometry.center }
-        pointer.hasDragged = true
-        pointer.activeHandle = null
-        hoveredHandle = null
-        hoveredNodeId = null
-        updateCursor()
-        return
-      }
+    if (overlayGeometry && insideOverlay && state.selectedIds.length > 0) {
+      pointer.mode = 'transform-translate'
+      pointer.transformCenter = { ...overlayGeometry.center }
+      pointer.hasDragged = true
+      pointer.activeHandle = null
+      hoveredHandle = null
+      hoveredNodeId = null
+      updateCursor()
+      return
+    }
 
-      if (hitNode && state.selectedIds.includes(hitNode.id)) {
-        pointer.mode = 'transform-translate'
-        pointer.transformCenter = { ...overlayGeometry.center }
-        pointer.hasDragged = true
-        pointer.activeHandle = null
-        hoveredHandle = null
-        hoveredNodeId = null
-        updateCursor()
-        return
-      }
+    if (hitNode && state.selectedIds.includes(hitNode.id)) {
+      pointer.mode = 'transform-translate'
+      const transformCenter = overlayGeometry?.center ?? hitNode.position
+      pointer.transformCenter = { ...transformCenter }
+      pointer.hasDragged = true
+      pointer.activeHandle = null
+      hoveredHandle = null
+      hoveredNodeId = null
+      updateCursor()
+      return
     }
 
     pointer.mode = 'click-select'
@@ -1082,15 +1224,72 @@ function configureScene(
         return
       }
       case 'transform-scale': {
-        const distance = Math.max(distanceBetween(worldPoint, pointer.transformCenter), 1e-4)
-        const ratio = distance / Math.max(pointer.lastScaleDistance, 1e-4)
-        if (Math.abs(ratio - 1) > 1e-6) {
-          if (!pointer.transformStarted) {
-            storeApi.getState().startTransformSession()
-            pointer.transformStarted = true
+        const rotation = pointer.scaleRotation
+        const localPoint = worldPointToLocalPoint(worldPoint, pointer.transformCenter, rotation)
+        const localX = localPoint.x
+        const localY = localPoint.y
+
+        if (!pointer.scaleBaseNodes) {
+          pointer.scaleBaseNodes = cloneSceneNodes(storeApi.getState().nodes)
+        }
+
+        const minHalf = MIN_HALF_SIZE
+        const baseLocalX = pointer.scaleStartLocal.x
+        const baseLocalY = pointer.scaleStartLocal.y
+        const baseWidth = Math.max(Math.abs(baseLocalX), minHalf)
+        const baseHeight = Math.max(Math.abs(baseLocalY), minHalf)
+        const baseHalfWidth = Math.max(pointer.scaleStartHalf.width, minHalf)
+        const baseHalfHeight = Math.max(pointer.scaleStartHalf.height, minHalf)
+
+        let absoluteScaleX = 1
+        let absoluteScaleY = 1
+
+        if (pointer.aspectLock) {
+          const minScale = 1e-4
+          let uniformScale = 1
+          if (pointer.scaleAxis === 'x') {
+            uniformScale = Math.max(Math.abs(localX) / baseHalfWidth, minScale)
+          } else if (pointer.scaleAxis === 'y') {
+            uniformScale = Math.max(Math.abs(localY) / baseHalfHeight, minScale)
+          } else {
+            const baseDiagonal = Math.max(Math.hypot(baseHalfWidth, baseHalfHeight), minHalf)
+            const targetDiagonal = Math.max(Math.hypot(localX, localY), minHalf)
+            uniformScale = Math.max(targetDiagonal / baseDiagonal, minScale)
           }
-          storeApi.getState().scaleSelected(pointer.transformCenter, ratio)
-          pointer.lastScaleDistance = distance
+          absoluteScaleX = uniformScale
+          absoluteScaleY = uniformScale
+        } else {
+          if (pointer.scaleAxis !== 'y') {
+            const targetWidth = Math.max(Math.abs(localX), minHalf)
+            absoluteScaleX = Math.max(targetWidth / baseWidth, 1e-4)
+          }
+          if (pointer.scaleAxis !== 'x') {
+            const targetHeight = Math.max(Math.abs(localY), minHalf)
+            absoluteScaleY = Math.max(targetHeight / baseHeight, 1e-4)
+          }
+          if (pointer.scaleAxis === 'x') {
+            absoluteScaleY = 1
+          } else if (pointer.scaleAxis === 'y') {
+            absoluteScaleX = 1
+          }
+        }
+
+        const changed =
+          Math.abs(absoluteScaleX - pointer.scaleLastAbsolute.x) > 1e-4 ||
+          Math.abs(absoluteScaleY - pointer.scaleLastAbsolute.y) > 1e-4
+        if (!changed) {
+          return
+        }
+        if (!pointer.transformStarted) {
+          storeApi.getState().startTransformSession()
+          pointer.transformStarted = true
+        }
+        resetNodesToScaleBaseline()
+        storeApi.getState().scaleSelected(pointer.transformCenter, absoluteScaleX, absoluteScaleY)
+        pointer.lastWorld = worldPoint
+        pointer.scaleLastAbsolute = {
+          x: absoluteScaleX,
+          y: absoluteScaleY,
         }
         return
       }
@@ -1178,9 +1377,15 @@ function configureScene(
     pointer.additive = false
     pointer.toggle = false
     pointer.activeHandle = null
-    pointer.lastScaleDistance = 0
     pointer.lastAngle = 0
     pointer.transformStarted = false
+    pointer.scaleStartLocal = { x: 1, y: 1 }
+    pointer.scaleStartHalf = { width: 1, height: 1 }
+    pointer.scaleLastAbsolute = { x: 1, y: 1 }
+    pointer.scaleBaseNodes = null
+    pointer.scaleRotation = 0
+    pointer.scaleAxis = 'both'
+    pointer.aspectLock = false
     hoveredHandle = null
     hoveredNodeId = null
     marquee.visible = false

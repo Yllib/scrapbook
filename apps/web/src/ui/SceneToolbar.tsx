@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useRef, useState, type ChangeEvent, type ChangeEventHandler } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent, type ChangeEventHandler } from 'react'
 import { useSceneStore } from '../state/scene'
 import { uploadAsset, waitForAssetReady } from '../api/assets'
 
@@ -35,8 +35,10 @@ export function SceneToolbar() {
   const sendBackward = useSceneStore((state) => state.sendSelectedBackward)
   const bringToFront = useSceneStore((state) => state.bringSelectedToFront)
   const sendToBack = useSceneStore((state) => state.sendSelectedToBack)
+  const setSelectedAspectRatioLocked = useSceneStore((state) => state.setSelectedAspectRatioLocked)
   const worldScale = useSceneStore((state) => state.world.scale)
   const uploadInputRef = useRef<HTMLInputElement>(null)
+  const aspectRatioCheckboxRef = useRef<HTMLInputElement>(null)
 
   const firstSelected = useMemo(() => {
     if (selectedIds.length === 0) return null
@@ -59,6 +61,25 @@ export function SceneToolbar() {
     })
 
   const zoomFactor = useMemo(() => (worldScale !== 0 ? 1 / worldScale : 1), [worldScale])
+
+  const aspectRatioState = useMemo(() => {
+    if (selectedIds.length === 0) return null
+    const selectedNodes = selectedIds
+      .map((id) => nodes.find((node) => node.id === id))
+      .filter((node): node is NonNullable<typeof node> => Boolean(node))
+    if (selectedNodes.length === 0) return null
+    const firstLock = selectedNodes[0].aspectRatioLocked
+    const allSame = selectedNodes.every((node) => node.aspectRatioLocked === firstLock)
+    return allSame ? firstLock : 'mixed'
+  }, [nodes, selectedIds])
+
+  useEffect(() => {
+    if (aspectRatioCheckboxRef.current) {
+      aspectRatioCheckboxRef.current.indeterminate = aspectRatioState === 'mixed'
+    }
+  }, [aspectRatioState])
+
+  const aspectRatioChecked = aspectRatioState !== false
 
   const handleAddRect = useCallback(() => {
     createShape(
@@ -174,6 +195,13 @@ export function SceneToolbar() {
     [updateCornerRadius],
   )
 
+  const handleAspectRatioToggle = useCallback(
+    (event: ChangeEvent<HTMLInputElement>) => {
+      setSelectedAspectRatioLocked(event.target.checked)
+    },
+    [setSelectedAspectRatioLocked],
+  )
+
   const handleLockSelected = useCallback(() => {
     lockSelected()
   }, [lockSelected])
@@ -257,6 +285,16 @@ export function SceneToolbar() {
             onChange={handleCornerRadiusChange}
             disabled={!canEditCornerRadius}
           />
+        </label>
+        <label className="toggle-control">
+          <input
+            ref={aspectRatioCheckboxRef}
+            type="checkbox"
+            checked={aspectRatioChecked}
+            onChange={handleAspectRatioToggle}
+            disabled={selectedCount === 0}
+          />
+          <span>Lock aspect ratio</span>
         </label>
       </div>
       <div className="toolbar-section toolbar-history" aria-label="Undo and redo">

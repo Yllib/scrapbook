@@ -22,6 +22,7 @@ export interface SceneNode {
   rotation: number
   shape?: ShapeDefinition
   image?: ImageDefinition
+  aspectRatioLocked: boolean
   fill?: string
   stroke?: {
     color: string
@@ -117,11 +118,12 @@ interface SceneState {
   startTransformSession: () => void
   commitTransformSession: () => void
   translateSelected: (delta: Vec2, options?: { record?: boolean }) => void
-  scaleSelected: (center: Vec2, scaleFactor: number, options?: { record?: boolean }) => void
+  scaleSelected: (center: Vec2, scaleX: number, scaleY: number, options?: { record?: boolean }) => void
   rotateSelected: (center: Vec2, deltaRadians: number, options?: { record?: boolean }) => void
   updateSelectedFill: (color: string) => void
   updateSelectedStroke: (stroke: Partial<{ color: string; width: number }>) => void
   updateSelectedCornerRadius: (cornerRadius: number) => void
+  setSelectedAspectRatioLocked: (locked: boolean) => void
   lockSelected: () => void
   unlockNodes: (ids: string[]) => void
   bringSelectedForward: () => void
@@ -267,6 +269,7 @@ export const useSceneStore = create<SceneState>((set, get) => ({
         fill: overrides.fill,
         stroke: overrides.stroke,
         locked: overrides.locked,
+        aspectRatioLocked: overrides.aspectRatioLocked,
       },
     )
   },
@@ -295,6 +298,7 @@ export const useSceneStore = create<SceneState>((set, get) => ({
           }
         : { color: DEFAULT_STROKE, width: 2 * factor },
       locked: overrides.locked ?? false,
+      aspectRatioLocked: overrides.aspectRatioLocked ?? true,
     }
 
     set((prev) => {
@@ -346,6 +350,7 @@ export const useSceneStore = create<SceneState>((set, get) => ({
       fill: overrides.fill,
       stroke: overrides.stroke,
       locked: overrides.locked ?? false,
+      aspectRatioLocked: overrides.aspectRatioLocked ?? true,
     }
 
     set((prev) => {
@@ -477,29 +482,45 @@ export const useSceneStore = create<SceneState>((set, get) => ({
         : prev.history
       return { nodes, history }
     }),
-  scaleSelected: (center, scaleFactor, options) =>
+  scaleSelected: (center, scaleX, scaleY, options) =>
     set((prev) => {
       if (prev.selectedIds.length === 0) return prev
-      if (!Number.isFinite(scaleFactor) || scaleFactor === 0) return prev
+      if (!Number.isFinite(scaleX) || !Number.isFinite(scaleY)) return prev
       const selectedSet = new Set(prev.selectedIds)
-      const safeScale = Math.max(scaleFactor, 1e-4)
+      const safeScaleX = Math.max(scaleX, 1e-4)
+      const safeScaleY = Math.max(scaleY, 1e-4)
       const nodes = prev.nodes.map((node) => {
         if (!selectedSet.has(node.id)) return node
         const offsetX = node.position.x - center.x
         const offsetY = node.position.y - center.y
-        const newX = center.x + offsetX * safeScale
-        const newY = center.y + offsetY * safeScale
-        const width = Math.max(node.size.width * safeScale, MIN_NODE_SIZE)
-        const height = Math.max(node.size.height * safeScale, MIN_NODE_SIZE)
+        const minScaleX = MIN_NODE_SIZE / Math.max(node.size.width, Number.EPSILON)
+        const minScaleY = MIN_NODE_SIZE / Math.max(node.size.height, Number.EPSILON)
+
+        let effectiveScaleX = Math.max(safeScaleX, minScaleX)
+        let effectiveScaleY = Math.max(safeScaleY, minScaleY)
+
+        if (node.aspectRatioLocked) {
+          const uniformScale = Math.max(effectiveScaleX, effectiveScaleY)
+          effectiveScaleX = uniformScale
+          effectiveScaleY = uniformScale
+        }
+
+        const newX = center.x + offsetX * effectiveScaleX
+        const newY = center.y + offsetY * effectiveScaleY
+        const width = node.size.width * effectiveScaleX
+        const height = node.size.height * effectiveScaleY
+        const areaScale = Math.max(effectiveScaleX * effectiveScaleY, 1e-8)
+        const shapeScale = Math.sqrt(areaScale)
+
         return {
           ...node,
           position: { x: newX, y: newY },
           size: { width, height },
-          shape: scaleShapeDefinition(node.shape, safeScale, width, height),
+          shape: scaleShapeDefinition(node.shape, shapeScale, width, height),
           stroke: node.stroke
             ? {
                 ...node.stroke,
-                width: Math.max(node.stroke.width * safeScale, 0),
+                width: Math.max(node.stroke.width * shapeScale, 0),
               }
             : undefined,
         }
@@ -597,6 +618,19 @@ export const useSceneStore = create<SceneState>((set, get) => ({
           },
         }
       })
+      const history = !prev.history.recording ? pushSnapshot(prev.history, createSnapshot(prev)) : prev.history
+      return {
+        nodes,
+        history,
+      }
+    }),
+  setSelectedAspectRatioLocked: (locked) =>
+    set((prev) => {
+      if (prev.selectedIds.length === 0) return prev
+      const selectedSet = new Set(prev.selectedIds)
+      const nodes = prev.nodes.map((node) =>
+        selectedSet.has(node.id) ? { ...node, aspectRatioLocked: locked } : node,
+      )
       const history = !prev.history.recording ? pushSnapshot(prev.history, createSnapshot(prev)) : prev.history
       return {
         nodes,

@@ -170,7 +170,7 @@ describe('scene store', () => {
 
     state.setSelection([a.id, b.id])
     state.startTransformSession()
-    state.scaleSelected({ x: 50, y: 0 }, 2)
+    state.scaleSelected({ x: 50, y: 0 }, 2, 2)
     state.commitTransformSession()
 
     const nodes = useSceneStore.getState().nodes
@@ -181,6 +181,33 @@ describe('scene store', () => {
     expect(nodeA.size.width).toBeCloseTo(200)
     expect(nodeB.position.x).toBeCloseTo(150)
     expect(nodeB.size.height).toBeCloseTo(100)
+  })
+
+  it('keeps node aspect ratio locked when scaling unevenly', () => {
+    const state = useSceneStore.getState()
+    const node = createNode({ id: 'locked-node', position: { x: 0, y: 0 }, size: { width: 120, height: 60 } })
+
+    state.setSelection([node.id])
+    state.scaleSelected({ x: 0, y: 0 }, 2, 0.5)
+
+    const updated = useSceneStore.getState().nodes.find((n) => n.id === node.id)!
+    expect(updated.size.width).toBeCloseTo(240)
+    expect(updated.size.height).toBeCloseTo(120)
+    expect(updated.aspectRatioLocked).toBe(true)
+  })
+
+  it('allows non-uniform scaling when aspect ratio is unlocked', () => {
+    const state = useSceneStore.getState()
+    const node = createNode({ id: 'unlocked-node', position: { x: 0, y: 0 }, size: { width: 120, height: 60 } })
+
+    state.setSelection([node.id])
+    state.setSelectedAspectRatioLocked(false)
+    state.scaleSelected({ x: 0, y: 0 }, 2, 0.5)
+
+    const updated = useSceneStore.getState().nodes.find((n) => n.id === node.id)!
+    expect(updated.size.width).toBeCloseTo(240)
+    expect(updated.size.height).toBeCloseTo(30)
+    expect(updated.aspectRatioLocked).toBe(false)
   })
 
   it('rotates selection around the transform center', () => {
@@ -242,7 +269,7 @@ describe('scene store', () => {
     const shape = state.createShapeNode({ kind: 'rectangle', cornerRadius: 10 }, { size: { width: 100, height: 80 } })
     state.setSelection([shape.id])
     state.startTransformSession()
-    state.scaleSelected({ x: 0, y: 0 }, 2)
+    state.scaleSelected({ x: 0, y: 0 }, 2, 2)
     state.commitTransformSession()
 
     const updated = useSceneStore.getState().nodes.find((node) => node.id === shape.id)
