@@ -156,6 +156,15 @@ describe('scene store', () => {
     updated = useSceneStore.getState().nodes.find((n) => n.id === node.id)!
     expect(updated.text?.fontSize).toBe(64)
     expect(updated.size.width).toBeGreaterThan(initialWidth)
+    state.setSelectedFontWeight(700)
+    updated = useSceneStore.getState().nodes.find((n) => n.id === node.id)!
+    expect(updated.text?.fontWeight).toBe(700)
+    state.setSelectedFontStyle('italic')
+    updated = useSceneStore.getState().nodes.find((n) => n.id === node.id)!
+    expect(updated.text?.fontStyle).toBe('italic')
+    state.setSelectedUnderline(true)
+    updated = useSceneStore.getState().nodes.find((n) => n.id === node.id)!
+    expect(updated.text?.underline).toBe(true)
   })
 
   it('translates selection with undo/redo support', () => {

@@ -70,6 +70,8 @@ export interface TextDefinition {
   fontWeight: number
   lineHeight: number
   align: 'left' | 'center' | 'right'
+  fontStyle: 'normal' | 'italic'
+  underline: boolean
 }
 
 export interface AABB {
@@ -100,20 +102,34 @@ const DEFAULT_POLYGON_POINTS: Vec2[] = [
   { x: 0.5, y: 0.5 },
   { x: -0.5, y: 0.5 },
 ]
-export const DEFAULT_FONT_FAMILY = 'Inter, \"Helvetica Neue\", Arial, sans-serif'
+export const DEFAULT_FONT_FAMILY = 'Inter, "Helvetica Neue", Arial, sans-serif'
 export const DEFAULT_FONT_SIZE = 32
-const DEFAULT_FONT_WEIGHT = 400
+export const DEFAULT_FONT_WEIGHT = 400
 export const DEFAULT_LINE_HEIGHT = 1.2
 export const DEFAULT_TEXT_ALIGN: TextDefinition['align'] = 'left'
 export const DEFAULT_TEXT_CONTENT = 'Text'
-const TEXT_WIDTH_FACTOR = 0.62
+const DEFAULT_FONT_STYLE: TextDefinition['fontStyle'] = 'normal'
+const TEXT_MEASURE_CANVAS = typeof document !== 'undefined' ? document.createElement('canvas') : null
+const TEXT_MEASURE_CTX = TEXT_MEASURE_CANVAS ? TEXT_MEASURE_CANVAS.getContext('2d') : null
 
-const estimateTextSize = (text: TextDefinition): Size2D => {
+const measureTextSize = (text: TextDefinition): Size2D => {
   const lines = text.content.split(/\r?\n/)
-  const maxChars = lines.reduce((max, line) => Math.max(max, line.length), 1)
-  const width = Math.max(32, maxChars * text.fontSize * TEXT_WIDTH_FACTOR)
-  const height = Math.max(text.fontSize, lines.length * text.fontSize * text.lineHeight)
-  return { width, height }
+  if (TEXT_MEASURE_CTX && TEXT_MEASURE_CANVAS) {
+    TEXT_MEASURE_CTX.font = `${text.fontStyle} ${text.fontWeight} ${text.fontSize}px ${text.fontFamily}`
+    const widths = lines.map((line) => TEXT_MEASURE_CTX.measureText(line || ' ').width)
+    const maxWidth = widths.length ? Math.max(...widths) : 0
+    const height = Math.max(text.fontSize, lines.length * text.fontSize * text.lineHeight)
+    return {
+      width: Math.max(32, maxWidth),
+      height: Math.max(32, height),
+    }
+  }
+  const fallbackWidth = Math.max(
+    32,
+    lines.reduce((max, line) => Math.max(max, line.length * text.fontSize * 0.6), 0),
+  )
+  const fallbackHeight = Math.max(text.fontSize, lines.length * text.fontSize * text.lineHeight)
+  return { width: fallbackWidth, height: fallbackHeight }
 }
 
 interface SceneSnapshot {
@@ -169,6 +185,9 @@ interface SceneState {
   setSelectedFontSize: (fontSize: number) => void
   setSelectedTextAlign: (align: TextDefinition['align']) => void
   setSelectedLineHeight: (lineHeight: number) => void
+  setSelectedFontWeight: (fontWeight: number) => void
+  setSelectedFontStyle: (style: TextDefinition['fontStyle']) => void
+  setSelectedUnderline: (underline: boolean) => void
   lockSelected: () => void
   unlockNodes: (ids: string[]) => void
   bringSelectedForward: () => void
@@ -266,6 +285,8 @@ const cloneNode = (node: SceneNode): SceneNode => ({
         fontWeight: node.text.fontWeight,
         lineHeight: node.text.lineHeight,
         align: node.text.align,
+        fontStyle: node.text.fontStyle,
+        underline: node.text.underline,
       }
     : undefined,
   stroke: node.stroke ? { ...node.stroke } : undefined,
@@ -451,8 +472,10 @@ export const useSceneStore = create<SceneState>((set, get) => ({
       fontWeight: overrides.text?.fontWeight ?? DEFAULT_FONT_WEIGHT,
       lineHeight: overrides.text?.lineHeight ?? DEFAULT_LINE_HEIGHT,
       align: overrides.text?.align ?? DEFAULT_TEXT_ALIGN,
+      fontStyle: overrides.text?.fontStyle ?? DEFAULT_FONT_STYLE,
+      underline: overrides.text?.underline ?? false,
     }
-    const size = overrides.size ?? estimateTextSize(textDef)
+    const size = overrides.size ?? measureTextSize(textDef)
     const node: SceneNode = {
       id,
       type: 'text',
@@ -637,6 +660,19 @@ export const useSceneStore = create<SceneState>((set, get) => ({
         const areaScale = Math.max(effectiveScaleX * effectiveScaleY, 1e-8)
         const shapeScale = Math.sqrt(areaScale)
 
+        if (node.type === 'text' && node.text) {
+          const uniformScale = Math.max(effectiveScaleX, effectiveScaleY)
+          const nextFontSize = Math.max(4, node.text.fontSize * uniformScale)
+          const text = { ...node.text, fontSize: nextFontSize }
+          const size = measureTextSize(text)
+          return {
+            ...node,
+            position: { x: newX, y: newY },
+            size,
+            text,
+          }
+        }
+
         return {
           ...node,
           position: { x: newX, y: newY },
@@ -773,7 +809,7 @@ export const useSceneStore = create<SceneState>((set, get) => ({
         if (node.text.content === normalized) return node
         changed = true
         const text = { ...node.text, content: normalized }
-        const size = estimateTextSize(text)
+        const size = measureTextSize(text)
         return {
           ...node,
           text,
@@ -794,7 +830,7 @@ export const useSceneStore = create<SceneState>((set, get) => ({
         if (node.text.fontFamily === fontFamily) return node
         changed = true
         const text = { ...node.text, fontFamily }
-        const size = estimateTextSize(text)
+        const size = measureTextSize(text)
         return { ...node, text, size }
       })
       if (!changed) return prev
@@ -811,7 +847,7 @@ export const useSceneStore = create<SceneState>((set, get) => ({
         if (node.text.fontSize === fontSize) return node
         changed = true
         const text = { ...node.text, fontSize }
-        const size = estimateTextSize(text)
+        const size = measureTextSize(text)
         return { ...node, text, size }
       })
       if (!changed) return prev
@@ -836,6 +872,55 @@ export const useSceneStore = create<SceneState>((set, get) => ({
       const history = !prev.history.recording ? pushSnapshot(prev.history, createSnapshot(prev)) : prev.history
       return { nodes, history }
     }),
+  setSelectedFontWeight: (fontWeight) =>
+    set((prev) => {
+      if (!Number.isFinite(fontWeight) || prev.selectedIds.length === 0) return prev
+      const selectedSet = new Set(prev.selectedIds)
+      let changed = false
+      const nodes = prev.nodes.map((node) => {
+        if (!selectedSet.has(node.id) || node.type !== 'text' || !node.text) return node
+        if (node.text.fontWeight === fontWeight) return node
+        changed = true
+        const text = { ...node.text, fontWeight }
+        const size = measureTextSize(text)
+        return { ...node, text, size }
+      })
+      if (!changed) return prev
+      const history = !prev.history.recording ? pushSnapshot(prev.history, createSnapshot(prev)) : prev.history
+      return { nodes, history }
+    }),
+  setSelectedFontStyle: (style) =>
+    set((prev) => {
+      if (prev.selectedIds.length === 0) return prev
+      const selectedSet = new Set(prev.selectedIds)
+      let changed = false
+      const nodes = prev.nodes.map((node) => {
+        if (!selectedSet.has(node.id) || node.type !== 'text' || !node.text) return node
+        if (node.text.fontStyle === style) return node
+        changed = true
+        const text = { ...node.text, fontStyle: style }
+        const size = measureTextSize(text)
+        return { ...node, text, size }
+      })
+      if (!changed) return prev
+      const history = !prev.history.recording ? pushSnapshot(prev.history, createSnapshot(prev)) : prev.history
+      return { nodes, history }
+    }),
+  setSelectedUnderline: (underline) =>
+    set((prev) => {
+      if (prev.selectedIds.length === 0) return prev
+      const selectedSet = new Set(prev.selectedIds)
+      let changed = false
+      const nodes = prev.nodes.map((node) => {
+        if (!selectedSet.has(node.id) || node.type !== 'text' || !node.text) return node
+        if (node.text.underline === underline) return node
+        changed = true
+        return { ...node, text: { ...node.text, underline } }
+      })
+      if (!changed) return prev
+      const history = !prev.history.recording ? pushSnapshot(prev.history, createSnapshot(prev)) : prev.history
+      return { nodes, history }
+    }),
   setSelectedLineHeight: (lineHeight) =>
     set((prev) => {
       if (!Number.isFinite(lineHeight) || lineHeight <= 0 || prev.selectedIds.length === 0) return prev
@@ -846,7 +931,7 @@ export const useSceneStore = create<SceneState>((set, get) => ({
         if (node.text.lineHeight === lineHeight) return node
         changed = true
         const text = { ...node.text, lineHeight }
-        const size = estimateTextSize(text)
+        const size = measureTextSize(text)
         return { ...node, text, size }
       })
       if (!changed) return prev

@@ -4,10 +4,13 @@ import {
   useRef,
   useState,
   useEffect,
+  useLayoutEffect,
   type ChangeEvent,
   type ChangeEventHandler,
   type ReactNode,
+  type RefObject,
 } from 'react'
+import { createPortal } from 'react-dom'
 import {
   useSceneStore,
   type SceneNode,
@@ -16,6 +19,7 @@ import {
   DEFAULT_FONT_SIZE,
   DEFAULT_LINE_HEIGHT,
   DEFAULT_TEXT_ALIGN,
+  DEFAULT_FONT_WEIGHT,
 } from '../state/scene'
 import { uploadAsset, waitForAssetReady } from '../api/assets'
 import { useDialogStore } from '../state/dialog'
@@ -24,12 +28,14 @@ import {
   AlignCenter,
   AlignLeft,
   AlignRight,
+  Bold as BoldIcon,
   ArrowDownToLine,
   ArrowUpToLine,
   ChevronDown,
   ChevronUp,
   Circle,
   ImageUp,
+  Italic as ItalicIcon,
   Link as LinkIcon,
   Link2Off,
   Lock,
@@ -38,6 +44,7 @@ import {
   Trash2,
   Triangle as TriangleIcon,
   Type as TypeIcon,
+  Underline as UnderlineIcon,
   Undo2,
 } from 'lucide-react'
 
@@ -81,7 +88,6 @@ export function SceneToolbar() {
   const createShape = useSceneStore((state) => state.createShapeNode)
   const createImage = useSceneStore((state) => state.createImageNode)
   const createText = useSceneStore((state) => state.createTextNode)
-  const nodeCount = useSceneStore((state) => state.nodes.length)
   const nodes = useSceneStore((state) => state.nodes)
   const selectedIds = useSceneStore((state) => state.selectedIds)
   const selectedCount = selectedIds.length
@@ -104,6 +110,9 @@ export function SceneToolbar() {
   const setFontSize = useSceneStore((state) => state.setSelectedFontSize)
   const setTextAlign = useSceneStore((state) => state.setSelectedTextAlign)
   const setLineHeight = useSceneStore((state) => state.setSelectedLineHeight)
+  const setFontWeight = useSceneStore((state) => state.setSelectedFontWeight)
+  const setFontStyle = useSceneStore((state) => state.setSelectedFontStyle)
+  const setUnderline = useSceneStore((state) => state.setSelectedUnderline)
   const worldScale = useSceneStore((state) => state.world.scale)
   const uploadInputRef = useRef<HTMLInputElement>(null)
   const toolbarSectionsRef = useRef<HTMLDivElement>(null)
@@ -176,6 +185,9 @@ export function SceneToolbar() {
   const fontSizeValue = firstTextNode?.text?.fontSize ?? DEFAULT_FONT_SIZE
   const lineHeightValue = firstTextNode?.text?.lineHeight ?? DEFAULT_LINE_HEIGHT
   const textAlignValue = firstTextNode?.text?.align ?? DEFAULT_TEXT_ALIGN
+  const textIsBold = (firstTextNode?.text?.fontWeight ?? DEFAULT_FONT_WEIGHT) >= 600
+  const textIsItalic = (firstTextNode?.text?.fontStyle ?? 'normal') === 'italic'
+  const textIsUnderline = Boolean(firstTextNode?.text?.underline)
 
   const handleAddRect = useCallback(() => {
     createShape(
@@ -383,6 +395,19 @@ export function SceneToolbar() {
     [setTextAlign],
   )
 
+  const handleBoldToggle = useCallback(() => {
+    const next = textIsBold ? DEFAULT_FONT_WEIGHT : 700
+    setFontWeight(next)
+  }, [setFontWeight, textIsBold])
+
+  const handleItalicToggle = useCallback(() => {
+    setFontStyle(textIsItalic ? 'normal' : 'italic')
+  }, [setFontStyle, textIsItalic])
+
+  const handleUnderlineToggle = useCallback(() => {
+    setUnderline(!textIsUnderline)
+  }, [setUnderline, textIsUnderline])
+
   const aspectRatioLabel =
     aspectRatioState === 'mixed'
       ? 'Aspect ratio mixed—click to lock'
@@ -454,68 +479,44 @@ export function SceneToolbar() {
     </div>
   )
 
-  const textSectionContent = !canEditText ? null : (
-    <div className="toolbar-text-controls">
-      <label className="toolbar-style-control toolbar-style-control--block">
-        <span>Text</span>
-        <textarea value={textContentValue} onChange={handleTextContentChange} rows={3} />
-      </label>
-      <label className="toolbar-style-control">
-        <span>Font</span>
-        <select value={fontFamilyValue} onChange={handleFontFamilyChange}>
-          {FONT_OPTIONS.map((option) => (
-            <option key={option.value} value={option.value}>
-              {option.label}
-            </option>
-          ))}
-        </select>
-      </label>
-      <label className="toolbar-style-control">
-        <span>Size</span>
-        <input type="number" min={4} max={512} step={1} value={fontSizeValue} onChange={handleFontSizeChange} />
-      </label>
-      <label className="toolbar-style-control">
-        <span>Line Height</span>
-        <input
-          type="number"
-          min={0.5}
-          max={4}
-          step={0.05}
-          value={lineHeightValue}
-          onChange={handleLineHeightChange}
-        />
-      </label>
-      <div className="toolbar-style-control toolbar-style-control--justify">
-        <span>Align</span>
-        <div className="toolbar-align-group" role="group" aria-label="Text alignment">
-          <button
-            type="button"
-            className={`toolbar-align-button${textAlignValue === 'left' ? ' toolbar-align-button--active' : ''}`}
-            onClick={() => handleTextAlignChange('left')}
-            aria-pressed={textAlignValue === 'left'}
-          >
-            <AlignLeft size={16} />
-          </button>
-          <button
-            type="button"
-            className={`toolbar-align-button${textAlignValue === 'center' ? ' toolbar-align-button--active' : ''}`}
-            onClick={() => handleTextAlignChange('center')}
-            aria-pressed={textAlignValue === 'center'}
-          >
-            <AlignCenter size={16} />
-          </button>
-          <button
-            type="button"
-            className={`toolbar-align-button${textAlignValue === 'right' ? ' toolbar-align-button--active' : ''}`}
-            onClick={() => handleTextAlignChange('right')}
-            aria-pressed={textAlignValue === 'right'}
-          >
-            <AlignRight size={16} />
-          </button>
-        </div>
-      </div>
-    </div>
-  )
+  const [textPanelStyle, setTextPanelStyle] = useState({ top: 16, left: 16 })
+  const textPanelRef = useRef<HTMLDivElement>(null)
+
+  useLayoutEffect(() => {
+    if (!canEditText) return
+    const updatePosition = () => {
+      const toolbar = document.querySelector('.scene-toolbar')
+      const margin = 16
+      const panelRect = textPanelRef.current?.getBoundingClientRect()
+      const panelWidth = panelRect?.width ?? 280
+      const panelHeight = panelRect?.height ?? 220
+      if (!toolbar) {
+        setTextPanelStyle({ top: margin, left: margin })
+        return
+      }
+      const toolbarRect = toolbar.getBoundingClientRect()
+      const preferRight = toolbarRect.left < window.innerWidth / 2
+      let left = preferRight ? toolbarRect.right + margin : toolbarRect.left - panelWidth - margin
+      if (left + panelWidth > window.innerWidth - margin) {
+        left = window.innerWidth - panelWidth - margin
+      }
+      if (left < margin) {
+        left = margin
+      }
+      const preferTop = toolbarRect.top < window.innerHeight / 2
+      let top = preferTop ? toolbarRect.top : window.innerHeight - panelHeight - margin
+      if (top + panelHeight > window.innerHeight - margin) {
+        top = window.innerHeight - panelHeight - margin
+      }
+      if (top < margin) {
+        top = margin
+      }
+      setTextPanelStyle({ top, left })
+    }
+    updatePosition()
+    window.addEventListener('resize', updatePosition)
+    return () => window.removeEventListener('resize', updatePosition)
+  }, [canEditText, textContentValue, fontFamilyValue, fontSizeValue, lineHeightValue, textAlignValue])
 
   const toolbarSections: ToolbarSection[] = [
     {
@@ -564,12 +565,7 @@ export function SceneToolbar() {
     {
       key: 'style',
       label: 'Style',
-      content: (
-        <>
-          {styleSectionContent}
-          {textSectionContent}
-        </>
-      ),
+      content: styleSectionContent,
     },
     {
       key: 'actions',
@@ -637,8 +633,9 @@ export function SceneToolbar() {
   ]
 
   return (
-    <aside className="scene-toolbar" role="toolbar" aria-label="Scene actions">
-      <div className="toolbar-sections" ref={toolbarSectionsRef}>
+    <>
+      <aside className="scene-toolbar" role="toolbar" aria-label="Scene actions">
+        <div className="toolbar-sections" ref={toolbarSectionsRef}>
         {toolbarSections.map((section) => (
           <section key={section.key} className="toolbar-section">
             <p className="toolbar-label">{section.label}</p>
@@ -653,15 +650,38 @@ export function SceneToolbar() {
           </section>
         ))}
       </div>
-      <input
-        ref={uploadInputRef}
-        type="file"
-        accept="image/*"
-        onChange={handleUploadFile}
-        style={{ display: 'none' }}
-      />
-
-    </aside>
+        <input
+          ref={uploadInputRef}
+          type="file"
+          accept="image/*"
+          onChange={handleUploadFile}
+          style={{ display: 'none' }}
+        />
+      </aside>
+      {canEditText && (
+        <TextInspectorPanel
+          panelRef={textPanelRef}
+          style={textPanelStyle}
+          textValue={textContentValue}
+          onTextChange={handleTextContentChange}
+          fontFamily={fontFamilyValue}
+          onFontFamilyChange={handleFontFamilyChange}
+          fontSize={fontSizeValue}
+          onFontSizeChange={handleFontSizeChange}
+          lineHeight={lineHeightValue}
+          onLineHeightChange={handleLineHeightChange}
+          textAlign={textAlignValue}
+          onAlignChange={handleTextAlignChange}
+          fontOptions={FONT_OPTIONS}
+          isBold={textIsBold}
+          onToggleBold={handleBoldToggle}
+          isItalic={textIsItalic}
+          onToggleItalic={handleItalicToggle}
+          isUnderline={textIsUnderline}
+          onToggleUnderline={handleUnderlineToggle}
+        />
+      )}
+    </>
   )
 }
 
@@ -683,4 +703,141 @@ function ToolbarIconButton({ label, icon, onClick, disabled, variant = 'ghost', 
       <span className="sr-only">{ariaLabel}</span>
     </button>
   )
+}
+
+interface TextInspectorPanelProps {
+  panelRef: RefObject<HTMLDivElement | null>
+  style: { top: number; left: number }
+  textValue: string
+  onTextChange: (event: ChangeEvent<HTMLTextAreaElement>) => void
+  fontFamily: string
+  onFontFamilyChange: (event: ChangeEvent<HTMLSelectElement>) => void
+  fontSize: number
+  onFontSizeChange: (event: ChangeEvent<HTMLInputElement>) => void
+  lineHeight: number
+  onLineHeightChange: (event: ChangeEvent<HTMLInputElement>) => void
+  textAlign: TextDefinition['align']
+  onAlignChange: (align: TextDefinition['align']) => void
+  fontOptions: { label: string; value: string }[]
+  isBold: boolean
+  onToggleBold: () => void
+  isItalic: boolean
+  onToggleItalic: () => void
+  isUnderline: boolean
+  onToggleUnderline: () => void
+}
+
+function TextInspectorPanel(props: TextInspectorPanelProps) {
+  const {
+    panelRef,
+    style,
+    textValue,
+    onTextChange,
+    fontFamily,
+    onFontFamilyChange,
+    fontSize,
+    onFontSizeChange,
+    lineHeight,
+    onLineHeightChange,
+    textAlign,
+    onAlignChange,
+    fontOptions,
+    isBold,
+    onToggleBold,
+    isItalic,
+    onToggleItalic,
+    isUnderline,
+    onToggleUnderline,
+  } = props
+
+  const content = (
+    <div ref={panelRef} className="text-inspector" style={{ top: style.top, left: style.left }}>
+      <header>
+        <TypeIcon size={16} />
+        <span>Text</span>
+      </header>
+      <label className="toolbar-style-control toolbar-style-control--block">
+        <span>Content</span>
+        <textarea value={textValue} onChange={onTextChange} rows={3} />
+      </label>
+      <label className="toolbar-style-control">
+        <span>Font</span>
+        <select value={fontFamily} onChange={onFontFamilyChange}>
+          {fontOptions.map((option) => (
+            <option key={option.value} value={option.value}>
+              {option.label}
+            </option>
+          ))}
+        </select>
+      </label>
+      <label className="toolbar-style-control">
+        <span>Size</span>
+        <input type="number" min={4} step={1} value={fontSize} onChange={onFontSizeChange} />
+      </label>
+      <label className="toolbar-style-control">
+        <span>Line Height</span>
+        <input type="number" min={0.5} max={4} step={0.05} value={lineHeight} onChange={onLineHeightChange} />
+      </label>
+      <div className="toolbar-style-control toolbar-style-control--justify">
+        <span>Style</span>
+        <div className="toolbar-align-group" role="group" aria-label="Text style">
+          <button
+            type="button"
+            className={`toolbar-align-button${isBold ? ' toolbar-align-button--active' : ''}`}
+            onClick={onToggleBold}
+            aria-pressed={isBold}
+          >
+            <BoldIcon size={16} />
+          </button>
+          <button
+            type="button"
+            className={`toolbar-align-button${isItalic ? ' toolbar-align-button--active' : ''}`}
+            onClick={onToggleItalic}
+            aria-pressed={isItalic}
+          >
+            <ItalicIcon size={16} />
+          </button>
+          <button
+            type="button"
+            className={`toolbar-align-button${isUnderline ? ' toolbar-align-button--active' : ''}`}
+            onClick={onToggleUnderline}
+            aria-pressed={isUnderline}
+          >
+            <UnderlineIcon size={16} />
+          </button>
+        </div>
+      </div>
+      <div className="toolbar-style-control toolbar-style-control--justify">
+        <span>Align</span>
+        <div className="toolbar-align-group" role="group" aria-label="Text alignment">
+          <button
+            type="button"
+            className={`toolbar-align-button${textAlign === 'left' ? ' toolbar-align-button--active' : ''}`}
+            onClick={() => onAlignChange('left')}
+            aria-pressed={textAlign === 'left'}
+          >
+            <AlignLeft size={16} />
+          </button>
+          <button
+            type="button"
+            className={`toolbar-align-button${textAlign === 'center' ? ' toolbar-align-button--active' : ''}`}
+            onClick={() => onAlignChange('center')}
+            aria-pressed={textAlign === 'center'}
+          >
+            <AlignCenter size={16} />
+          </button>
+          <button
+            type="button"
+            className={`toolbar-align-button${textAlign === 'right' ? ' toolbar-align-button--active' : ''}`}
+            onClick={() => onAlignChange('right')}
+            aria-pressed={textAlign === 'right'}
+          >
+            <AlignRight size={16} />
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+
+  return createPortal(content, document.body)
 }

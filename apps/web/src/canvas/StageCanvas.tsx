@@ -1,22 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import {
-  Application,
-  Assets,
-  BitmapFont,
-  BitmapText,
-  Container,
-  Graphics,
-  Sprite,
-  TilingSprite,
-  Texture,
-} from 'pixi.js'
+import '@pixi/text-bitmap'
+import { Application, Assets, BitmapFont, BitmapText, Cache, Container, Graphics, Sprite, TilingSprite, Texture } from 'pixi.js'
 import {
   useSceneStore,
   screenToWorld,
   type SceneNode,
   type Vec2,
   type AABB,
-  type TextDefinition,
 } from '../state/scene'
 import { requestConfirmation } from '../state/dialog'
 import {
@@ -25,6 +15,7 @@ import {
   type SelectionOverlayGeometry,
 } from './selectionOverlay'
 import { pickTileLevel } from '../tiles/tileLevels'
+import { resolveMsdfFont } from './text/msdfFont'
 
 const DPR_CAP = 1.5
 const MIN_ZOOM = 1e-6
@@ -46,12 +37,12 @@ const DEFAULT_POLYGON_POINTS: Vec2[] = [
   { x: -0.5, y: 0.5 },
 ]
 const TILE_PIXEL_SIZE = 256
+const TEXT_FIT_EPSILON = 0.98
 
 const assetTextureCache = new Map<string, Texture>()
 const assetTexturePromises = new Map<string, Promise<Texture>>()
 const tileTextureCache = new Map<string, Texture>()
 const tileTexturePromises = new Map<string, Promise<Texture>>()
-const bitmapFontCache = new Map<string, string>()
 const BASE_FONT_SIZE = 64
 
 function fetchAssetTexture(assetId: string) {
@@ -119,11 +110,23 @@ interface NodeVisual {
   tileContainer?: Container
   tiles?: Map<string, Sprite>
   text?: BitmapText
+  underline?: Graphics
   activeTileLevel?: number
+  fontRequestToken?: symbol
+  fontName?: string
 }
+
+type ResolvedMsdfFont = Awaited<ReturnType<typeof resolveMsdfFont>>
 
 function clamp(value: number, min: number, max: number) {
   return Math.min(Math.max(value, min), max)
+}
+
+function ensureScale(value: number) {
+  if (Math.abs(value) < MIN_ZOOM) {
+    return value >= 0 ? MIN_ZOOM : -MIN_ZOOM
+  }
+  return value
 }
 
 function createGridTexture(size = GRID_SIZE, background = '#0f172a') {
@@ -138,23 +141,48 @@ function createGridTexture(size = GRID_SIZE, background = '#0f172a') {
   ctx.fillStyle = background
   ctx.fillRect(0, 0, size, size)
 
-  ctx.strokeStyle = 'rgba(255, 255, 255, 0.85)'
-  ctx.lineWidth = 1
+  const half = size / 2
+  const minorStep = size / 4
+  const crisp = (value: number) => Math.round(value) + 0.5
 
+  ctx.strokeStyle = 'rgba(148, 163, 184, 0.12)'
+  ctx.lineWidth = 1
+  ctx.beginPath()
+  for (let x = minorStep; x < size; x += minorStep) {
+    if (Math.abs(x - half) < 1e-6) continue
+    const px = crisp(x)
+    ctx.moveTo(px, 0)
+    ctx.lineTo(px, size)
+  }
+  for (let y = minorStep; y < size; y += minorStep) {
+    if (Math.abs(y - half) < 1e-6) continue
+    const py = crisp(y)
+    ctx.moveTo(0, py)
+    ctx.lineTo(size, py)
+  }
+  ctx.stroke()
+
+  ctx.strokeStyle = 'rgba(241, 245, 249, 0.22)'
+  ctx.lineWidth = 1
   ctx.beginPath()
   ctx.moveTo(0, 0.5)
   ctx.lineTo(size, 0.5)
   ctx.moveTo(0.5, 0)
   ctx.lineTo(0.5, size)
+  ctx.moveTo(0, crisp(size - 1))
+  ctx.lineTo(size, crisp(size - 1))
+  ctx.moveTo(crisp(size - 1), 0)
+  ctx.lineTo(crisp(size - 1), size)
   ctx.stroke()
 
   ctx.strokeStyle = 'rgba(59, 130, 246, 1)'
   ctx.lineWidth = 1.5
   ctx.beginPath()
-  ctx.moveTo(0, size - 0.5)
-  ctx.lineTo(size, size - 0.5)
-  ctx.moveTo(size - 0.5, 0)
-  ctx.lineTo(size - 0.5, size)
+  const axis = crisp(half)
+  ctx.moveTo(0, axis)
+  ctx.lineTo(size, axis)
+  ctx.moveTo(axis, 0)
+  ctx.lineTo(axis, size)
   ctx.stroke()
 
   return Texture.from(canvas)
@@ -528,6 +556,14 @@ function configureScene(
     spacePressed: false,
   }
 
+  const isTextInputTarget = (target: EventTarget | null) => {
+    if (!target || !(target instanceof HTMLElement)) return false
+    const tag = target.tagName
+    if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return true
+    if (target.isContentEditable) return true
+    return false
+  }
+
   const scaleNodeDimensions = (node: SceneNode, factor: number): SceneNode => {
     const position = { x: node.position.x * factor, y: node.position.y * factor }
     const size = { width: node.size.width * factor, height: node.size.height * factor }
@@ -633,13 +669,24 @@ function configureScene(
   }
 
   const updateGrid = () => {
-    grid.width = app.renderer.width
-    grid.height = app.renderer.height
-    grid.tileScale.set(world.scale.x, world.scale.y)
-    grid.tilePosition.set(
-      world.position.x / world.scale.x,
-      world.position.y / world.scale.y,
-    )
+    const scaleX = ensureScale(world.scale.x)
+    const scaleY = ensureScale(world.scale.y)
+    const viewportWidth = app.renderer.width
+    const viewportHeight = app.renderer.height
+    const viewportCenterX = viewportWidth / 2
+    const viewportCenterY = viewportHeight / 2
+
+    grid.width = viewportWidth
+    grid.height = viewportHeight
+    grid.pivot.set(viewportCenterX, viewportCenterY)
+    grid.position.set(viewportCenterX, viewportCenterY)
+    grid.scale.set(1, 1)
+    grid.tileScale.set(scaleX, scaleY)
+
+    const stageOriginX = world.position.x
+    const stageOriginY = world.position.y
+    const half = GRID_SIZE / 2
+    grid.tilePosition.set(stageOriginX - scaleX * half, stageOriginY - scaleY * half)
   }
 
   const updateGroupSelectionOverlay = () => {
@@ -864,7 +911,10 @@ function configureScene(
       const newTexture = createGridTexture(GRID_SIZE, state.backgroundColor ?? '#020617')
       grid.texture.destroy(true)
       grid.texture = newTexture
-      grid.tileScale.set(world.scale.x, world.scale.y)
+      const scaleX = ensureScale(world.scale.x)
+      const scaleY = ensureScale(world.scale.y)
+      grid.tileScale.set(scaleX, scaleY)
+      updateGrid()
     }
   })
 
@@ -1541,6 +1591,9 @@ function configureScene(
   }
 
   const handleKeyDown = async (event: KeyboardEvent) => {
+    if (isTextInputTarget(event.target)) {
+      return
+    }
     if (event.metaKey || event.ctrlKey) {
       const key = event.key.toLowerCase()
       if (key === 'z') {
@@ -1596,6 +1649,9 @@ function configureScene(
   }
 
   const handleKeyUp = (event: KeyboardEvent) => {
+    if (isTextInputTarget(event.target)) {
+      return
+    }
     if (event.code === 'Space') {
       keyboard.spacePressed = false
       if (pointer.mode !== 'panning') {
@@ -1665,6 +1721,9 @@ function hideImageSprite(visual: NodeVisual) {
   if (visual.text) {
     visual.text.visible = false
   }
+  if (visual.underline) {
+    visual.underline.visible = false
+  }
 }
 
 function ensureTileContainer(visual: NodeVisual) {
@@ -1685,15 +1744,31 @@ function ensureTextObject(visual: NodeVisual) {
   if (!visual.text) {
     const text = new BitmapText({
       text: '',
-      fontSize: BASE_FONT_SIZE,
+      anchor: 0,
+      style: {
+        fontSize: BASE_FONT_SIZE,
+        fontFamily: 'sans-serif',
+        fill: '#ffffff',
+      },
     })
     text.eventMode = 'none'
-    text.anchor?.set?.(0.5)
+    text.anchor.set(0, 0)
+    text.visible = false
     visual.container.addChildAt(text, 0)
     visual.text = text
   }
-  visual.text.visible = true
   return visual.text
+}
+
+// Align bitmap text vertically by its center and horizontally by center to match node bounding box
+function ensureUnderline(visual: NodeVisual) {
+  if (!visual.underline) {
+    const graphics = new Graphics()
+    graphics.eventMode = 'none'
+    visual.container.addChild(graphics)
+    visual.underline = graphics
+  }
+  return visual.underline
 }
 
 function renderNodeVisual(visual: NodeVisual, node: SceneNode, worldScale: number) {
@@ -1709,17 +1784,58 @@ function renderNodeVisual(visual: NodeVisual, node: SceneNode, worldScale: numbe
     hideImageSprite(visual)
     visual.body.visible = false
     const textObject = ensureTextObject(visual)
-    const fontName = resolveBitmapFont(node.text)
-    if (textObject.fontName !== fontName) {
-      textObject.fontName = fontName
+    textObject.visible = true
+    const fallbackFamily = node.text.fontFamily || 'Inter'
+    if (textObject.style.fontFamily !== fallbackFamily) {
+      textObject.style.fontFamily = fallbackFamily
     }
-    textObject.text = node.text.content
-    textObject.style.align = node.text.align
-    const scale = node.text.fontSize / BASE_FONT_SIZE
-    textObject.scale.set(scale)
+    if (textObject.style.fontSize !== node.text.fontSize) {
+      textObject.style.fontSize = node.text.fontSize
+    }
+    if (textObject.style.fontStyle !== node.text.fontStyle) {
+      textObject.style.fontStyle = node.text.fontStyle
+    }
+    if (textObject.style.align !== node.text.align) {
+      textObject.style.align = node.text.align
+    }
+    const lineHeight = node.text.fontSize * node.text.lineHeight
+    if (textObject.style.lineHeight !== lineHeight) {
+      textObject.style.lineHeight = lineHeight
+    }
+    if (textObject.text !== node.text.content) {
+      textObject.text = node.text.content
+    }
     textObject.tint = hexColorToNumber(node.fill, DEFAULT_FILL_COLOR)
-    textObject.updateText()
-    textObject.pivot.set(textObject.textWidth / 2, textObject.textHeight / 2)
+    fitFallbackTextObject(visual)
+    const requestToken = Symbol('font-request')
+    visual.fontRequestToken = requestToken
+    const nodeId = node.id
+
+    resolveMsdfFont({
+      fontFamily: node.text.fontFamily,
+      fontWeight: node.text.fontWeight,
+      fontStyle: node.text.fontStyle,
+      fontSize: node.text.fontSize,
+    })
+      .then((atlas) => {
+        if (visual.fontRequestToken !== requestToken) {
+          return
+        }
+        if (visual.node.id !== nodeId || visual.text?.destroyed) {
+          return
+        }
+        applyTextVisual(visual, atlas)
+      })
+      .catch((error) => {
+        console.error('[stage] failed to generate MSDF font', error)
+        if (visual.fontRequestToken === requestToken) {
+          visual.fontRequestToken = undefined
+        }
+        if (visual.text && !visual.text.destroyed) {
+          visual.text.visible = true
+          fitFallbackTextObject(visual)
+        }
+      })
     return
   }
 
@@ -1907,6 +2023,177 @@ function drawSelectionOverlay(visual: NodeVisual, worldScale: number, isSelected
   })
 }
 
+type TextBounds = {
+  minX: number
+  minY: number
+  maxX: number
+  maxY: number
+  width: number
+  height: number
+}
+
+function resolveTextBounds(textObject: BitmapText): TextBounds {
+  const raw = textObject.getLocalBounds() as any
+  const minX = typeof raw?.minX === 'number' ? raw.minX : typeof raw?.x === 'number' ? raw.x : 0
+  const minY = typeof raw?.minY === 'number' ? raw.minY : typeof raw?.y === 'number' ? raw.y : 0
+  const widthCandidate =
+    typeof raw?.width === 'number'
+      ? raw.width
+      : typeof raw?.maxX === 'number'
+        ? raw.maxX - minX
+        : 0
+  const heightCandidate =
+    typeof raw?.height === 'number'
+      ? raw.height
+      : typeof raw?.maxY === 'number'
+        ? raw.maxY - minY
+        : 0
+  const width = Math.max(0, widthCandidate)
+  const height = Math.max(0, heightCandidate)
+  const maxX = typeof raw?.maxX === 'number' ? raw.maxX : minX + width
+  const maxY = typeof raw?.maxY === 'number' ? raw.maxY : minY + height
+  return { minX, minY, maxX, maxY, width: Math.max(0, maxX - minX), height: Math.max(0, maxY - minY) }
+}
+
+function fitFallbackTextObject(visual: NodeVisual) {
+  const node = visual.node
+  if (node.type !== 'text' || !node.text || !visual.text) {
+    return
+  }
+
+  const textObject = visual.text
+  const updateText = (textObject as unknown as { updateText?: (skipTransform?: boolean) => void }).updateText
+  updateText?.call(textObject, true)
+
+  const bounds = resolveTextBounds(textObject)
+  if (bounds.width <= 0 || bounds.height <= 0) {
+    textObject.scale.set(1)
+    textObject.position.set(0, 0)
+    updateUnderlineVisual(visual, bounds)
+    return
+  }
+
+  const widthScale = node.size.width > 0 ? node.size.width / bounds.width : 1
+  const heightScale = node.size.height > 0 ? node.size.height / bounds.height : 1
+  const fitScale = Math.min(widthScale, heightScale, 1) * TEXT_FIT_EPSILON
+  const scale = Number.isFinite(fitScale) && fitScale > 0 ? fitScale : 1
+
+  textObject.pivot.set(0, 0)
+  textObject.scale.set(scale)
+
+  const centerX = bounds.minX + bounds.width / 2
+  const centerY = bounds.minY + bounds.height / 2
+  textObject.position.set(-centerX * scale, -centerY * scale)
+
+  updateUnderlineVisual(visual, bounds)
+}
+
+function fitMsdfTextObject(visual: NodeVisual) {
+  const node = visual.node
+  if (node.type !== 'text' || !node.text || !visual.text) {
+    return
+  }
+
+  const textObject = visual.text
+  const updateText = (textObject as unknown as { updateText?: (skipTransform?: boolean) => void }).updateText
+  updateText?.call(textObject, true)
+
+  const bounds = resolveTextBounds(textObject)
+  if (bounds.width <= 0 || bounds.height <= 0) {
+    textObject.scale.set(1)
+    textObject.position.set(0, 0)
+    updateUnderlineVisual(visual, bounds)
+    return
+  }
+
+  const widthScale = node.size.width > 0 ? node.size.width / bounds.width : 1
+  const heightScale = node.size.height > 0 ? node.size.height / bounds.height : 1
+  const fitScale = Math.min(widthScale, heightScale, 1) * TEXT_FIT_EPSILON
+  const scale = Number.isFinite(fitScale) && fitScale > 0 ? fitScale : 1
+
+  textObject.pivot.set(0, 0)
+  textObject.scale.set(scale)
+
+  const centerX = bounds.minX + bounds.width / 2
+  const centerY = bounds.minY + bounds.height / 2
+
+  let yCorrection = 0
+  if (visual.fontName) {
+    const cacheKey = `${visual.fontName}-bitmap`
+    const font = Cache.has(cacheKey) ? (Cache.get(cacheKey) as BitmapFont | undefined) : undefined
+    const metrics = font?.fontMetrics
+    if (metrics) {
+      yCorrection = ((metrics.ascent ?? 0) + (metrics.descent ?? 0) / 2)
+    }
+  }
+
+  textObject.position.set(-centerX * scale, (-centerY - yCorrection) * scale)
+
+  updateUnderlineVisual(visual, bounds)
+}
+
+function applyTextVisual(visual: NodeVisual, atlas: ResolvedMsdfFont) {
+  const node = visual.node
+  if (node.type !== 'text' || !node.text || !visual.text) {
+    return
+  }
+
+  visual.fontRequestToken = undefined
+  visual.fontName = atlas.name
+
+  const text = node.text
+  const textObject = visual.text
+
+  if (textObject.style.fontFamily !== atlas.name) {
+    textObject.style.fontFamily = atlas.name
+  }
+
+  textObject.style.fontSize = text.fontSize
+  textObject.style.fontStyle = text.fontStyle
+  textObject.style.align = text.align
+  textObject.style.lineHeight = text.fontSize * text.lineHeight
+  textObject.text = text.content
+  textObject.tint = hexColorToNumber(node.fill, DEFAULT_FILL_COLOR)
+  textObject.visible = true
+  fitMsdfTextObject(visual)
+
+}
+
+function updateUnderlineVisual(visual: NodeVisual, cachedBounds?: TextBounds) {
+  const node = visual.node
+  if (node.type !== 'text' || !node.text || !visual.text) {
+    if (visual.underline) {
+      visual.underline.visible = false
+    }
+    return
+  }
+
+  if (!node.text.underline) {
+    if (visual.underline) {
+      visual.underline.visible = false
+    }
+    return
+  }
+
+  const underline = ensureUnderline(visual)
+  const bounds = cachedBounds ?? resolveTextBounds(visual.text)
+  const scaleX = visual.text.scale.x
+  const scaleY = visual.text.scale.y
+  const left = visual.text.position.x + bounds.minX * scaleX
+  const right = visual.text.position.x + bounds.maxX * scaleX
+  const bottom = visual.text.position.y + bounds.maxY * scaleY
+  const lineY = bottom + Math.max(2, node.text.fontSize * scaleY * 0.06)
+  underline
+    .clear()
+    .moveTo(left, lineY)
+    .lineTo(right, lineY)
+    .stroke({
+      width: Math.max(1.5, node.text.fontSize * scaleY * 0.08),
+      color: hexColorToNumber(node.fill, DEFAULT_FILL_COLOR),
+    })
+  underline.visible = true
+}
+
 function addOriginMarker(world: Container) {
   const marker = new Container()
   marker.zIndex = -1000
@@ -1927,20 +2214,4 @@ function addOriginMarker(world: Container) {
   marker.addChild(center)
   world.addChild(marker)
   return marker
-}
-function resolveBitmapFont(text: TextDefinition) {
-  const key = `${text.fontFamily}|${text.fontWeight}`
-  if (bitmapFontCache.has(key)) {
-    return bitmapFontCache.get(key)!
-  }
-  const fontName = `font-${Math.abs(key.split('').reduce((sum, ch) => sum + ch.charCodeAt(0), 0))}`
-  BitmapFont.from(fontName, {
-    fontFamily: text.fontFamily,
-    fontSize: BASE_FONT_SIZE,
-    fontWeight: text.fontWeight as any,
-    fill: '#ffffff',
-    strokeThickness: 0,
-  })
-  bitmapFontCache.set(key, fontName)
-  return fontName
 }

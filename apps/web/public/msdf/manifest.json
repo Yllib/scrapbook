@@ -1,0 +1,100 @@
+{
+  "entries": [
+    {
+      "family": "Inter",
+      "weight": 400,
+      "italic": false,
+      "bucket": 64,
+      "fontName": "msdf-t0k782",
+      "data": "/msdf/inter/regular/64/font.json"
+    },
+    {
+      "family": "Inter",
+      "weight": 400,
+      "italic": false,
+      "bucket": 128,
+      "fontName": "msdf-1b41gir",
+      "data": "/msdf/inter/regular/128/font.json"
+    },
+    {
+      "family": "Inter",
+      "weight": 400,
+      "italic": false,
+      "bucket": 256,
+      "fontName": "msdf-1b41hbz",
+      "data": "/msdf/inter/regular/256/font.json"
+    },
+    {
+      "family": "Inter",
+      "weight": 400,
+      "italic": false,
+      "bucket": 512,
+      "fontName": "msdf-1b41jgi",
+      "data": "/msdf/inter/regular/512/font.json"
+    },
+    {
+      "family": "Inter",
+      "weight": 400,
+      "italic": true,
+      "bucket": 64,
+      "fontName": "msdf-cys8j7",
+      "data": "/msdf/inter/italic/64/font.json"
+    },
+    {
+      "family": "Inter",
+      "weight": 400,
+      "italic": true,
+      "bucket": 128,
+      "fontName": "msdf-1asqyxu",
+      "data": "/msdf/inter/italic/128/font.json"
+    },
+    {
+      "family": "Inter",
+      "weight": 400,
+      "italic": true,
+      "bucket": 256,
+      "fontName": "msdf-1asqzr2",
+      "data": "/msdf/inter/italic/256/font.json"
+    },
+    {
+      "family": "Inter",
+      "weight": 400,
+      "italic": true,
+      "bucket": 512,
+      "fontName": "msdf-1asr1vl",
+      "data": "/msdf/inter/italic/512/font.json"
+    },
+    {
+      "family": "Inter",
+      "weight": 700,
+      "italic": false,
+      "bucket": 64,
+      "fontName": "msdf-zf49tb",
+      "data": "/msdf/inter/bold/64/font.json"
+    },
+    {
+      "family": "Inter",
+      "weight": 700,
+      "italic": false,
+      "bucket": 128,
+      "fontName": "msdf-wjziw6",
+      "data": "/msdf/inter/bold/128/font.json"
+    },
+    {
+      "family": "Inter",
+      "weight": 700,
+      "italic": false,
+      "bucket": 256,
+      "fontName": "msdf-wjzjpe",
+      "data": "/msdf/inter/bold/256/font.json"
+    },
+    {
+      "family": "Inter",
+      "weight": 700,
+      "italic": false,
+      "bucket": 512,
+      "fontName": "msdf-wjzltx",
+      "data": "/msdf/inter/bold/512/font.json"
+    }
+  ]
+}

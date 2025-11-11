@@ -295,6 +295,31 @@ body {
   color: #38bdf8;
 }
 
+.text-inspector {
+  position: fixed;
+  z-index: 1000;
+  width: clamp(260px, 22vw, 340px);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 16px;
+  border-radius: 16px;
+  background: rgba(15, 23, 42, 0.95);
+  border: 1px solid rgba(56, 189, 248, 0.25);
+  box-shadow: 0 18px 40px rgba(2, 6, 23, 0.55);
+  backdrop-filter: blur(10px);
+}
+
+.text-inspector header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: rgba(248, 250, 252, 0.85);
+}
+
 .sr-only {
   position: absolute;
   width: 1px;
