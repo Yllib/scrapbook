@@ -8,11 +8,22 @@ import {
   type ChangeEventHandler,
   type ReactNode,
 } from 'react'
-import { useSceneStore } from '../state/scene'
+import {
+  useSceneStore,
+  type SceneNode,
+  type TextDefinition,
+  DEFAULT_FONT_FAMILY,
+  DEFAULT_FONT_SIZE,
+  DEFAULT_LINE_HEIGHT,
+  DEFAULT_TEXT_ALIGN,
+} from '../state/scene'
 import { uploadAsset, waitForAssetReady } from '../api/assets'
 import { useDialogStore } from '../state/dialog'
 import { summarizeTileLevels } from '../tiles/tileLevels'
 import {
+  AlignCenter,
+  AlignLeft,
+  AlignRight,
   ArrowDownToLine,
   ArrowUpToLine,
   ChevronDown,
@@ -26,6 +37,7 @@ import {
   RectangleHorizontal,
   Trash2,
   Triangle as TriangleIcon,
+  Type as TypeIcon,
   Undo2,
 } from 'lucide-react'
 
@@ -60,9 +72,15 @@ type ToolbarSection = {
 }
 
 export function SceneToolbar() {
+  const FONT_OPTIONS = [
+    { label: 'Inter', value: DEFAULT_FONT_FAMILY },
+    { label: 'Space Grotesk', value: '"Space Grotesk", "Helvetica Neue", Arial, sans-serif' },
+    { label: 'Roboto Mono', value: '"Roboto Mono", monospace' },
+  ]
   const [uploading, setUploading] = useState(false)
   const createShape = useSceneStore((state) => state.createShapeNode)
   const createImage = useSceneStore((state) => state.createImageNode)
+  const createText = useSceneStore((state) => state.createTextNode)
   const nodeCount = useSceneStore((state) => state.nodes.length)
   const nodes = useSceneStore((state) => state.nodes)
   const selectedIds = useSceneStore((state) => state.selectedIds)
@@ -81,6 +99,11 @@ export function SceneToolbar() {
   const bringToFront = useSceneStore((state) => state.bringSelectedToFront)
   const sendToBack = useSceneStore((state) => state.sendSelectedToBack)
   const setSelectedAspectRatioLocked = useSceneStore((state) => state.setSelectedAspectRatioLocked)
+  const updateTextContent = useSceneStore((state) => state.updateSelectedTextContent)
+  const setFontFamily = useSceneStore((state) => state.setSelectedFontFamily)
+  const setFontSize = useSceneStore((state) => state.setSelectedFontSize)
+  const setTextAlign = useSceneStore((state) => state.setSelectedTextAlign)
+  const setLineHeight = useSceneStore((state) => state.setSelectedLineHeight)
   const worldScale = useSceneStore((state) => state.world.scale)
   const uploadInputRef = useRef<HTMLInputElement>(null)
   const toolbarSectionsRef = useRef<HTMLDivElement>(null)
@@ -138,6 +161,22 @@ export function SceneToolbar() {
 
   const aspectRatioChecked = aspectRatioState !== false
 
+  const selectedTextNodes = useMemo(
+    () =>
+      selectedIds
+        .map((id) => nodes.find((node) => node.id === id))
+        .filter((node): node is SceneNode & { text: TextDefinition } => Boolean(node && node.type === 'text' && node.text)),
+    [nodes, selectedIds],
+  )
+
+  const canEditText = selectedTextNodes.length > 0 && selectedTextNodes.length === selectedCount
+  const firstTextNode = canEditText ? selectedTextNodes[0] : null
+  const textContentValue = firstTextNode?.text?.content ?? ''
+  const fontFamilyValue = firstTextNode?.text?.fontFamily ?? DEFAULT_FONT_FAMILY
+  const fontSizeValue = firstTextNode?.text?.fontSize ?? DEFAULT_FONT_SIZE
+  const lineHeightValue = firstTextNode?.text?.lineHeight ?? DEFAULT_LINE_HEIGHT
+  const textAlignValue = firstTextNode?.text?.align ?? DEFAULT_TEXT_ALIGN
+
   const handleAddRect = useCallback(() => {
     createShape(
       { kind: 'rectangle', cornerRadius: 0 },
@@ -176,6 +215,10 @@ export function SceneToolbar() {
       },
     )
   }, [createShape, zoomFactor])
+
+  const handleAddText = useCallback(() => {
+    createText()
+  }, [createText])
 
   const handleUploadClick = useCallback(() => {
     uploadInputRef.current?.click()
@@ -299,6 +342,47 @@ export function SceneToolbar() {
     sendToBack()
   }, [sendToBack])
 
+  const handleTextContentChange = useCallback(
+    (event: ChangeEvent<HTMLTextAreaElement>) => {
+      updateTextContent(event.target.value)
+    },
+    [updateTextContent],
+  )
+
+  const handleFontFamilyChange = useCallback(
+    (event: ChangeEvent<HTMLSelectElement>) => {
+      setFontFamily(event.target.value)
+    },
+    [setFontFamily],
+  )
+
+  const handleFontSizeChange = useCallback(
+    (event: ChangeEvent<HTMLInputElement>) => {
+      const size = Number.parseFloat(event.target.value)
+      if (Number.isFinite(size)) {
+        setFontSize(size)
+      }
+    },
+    [setFontSize],
+  )
+
+  const handleLineHeightChange = useCallback(
+    (event: ChangeEvent<HTMLInputElement>) => {
+      const lh = Number.parseFloat(event.target.value)
+      if (Number.isFinite(lh)) {
+        setLineHeight(lh)
+      }
+    },
+    [setLineHeight],
+  )
+
+  const handleTextAlignChange = useCallback(
+    (align: TextDefinition['align']) => {
+      setTextAlign(align)
+    },
+    [setTextAlign],
+  )
+
   const aspectRatioLabel =
     aspectRatioState === 'mixed'
       ? 'Aspect ratio mixed—click to lock'
@@ -370,6 +454,69 @@ export function SceneToolbar() {
     </div>
   )
 
+  const textSectionContent = !canEditText ? null : (
+    <div className="toolbar-text-controls">
+      <label className="toolbar-style-control toolbar-style-control--block">
+        <span>Text</span>
+        <textarea value={textContentValue} onChange={handleTextContentChange} rows={3} />
+      </label>
+      <label className="toolbar-style-control">
+        <span>Font</span>
+        <select value={fontFamilyValue} onChange={handleFontFamilyChange}>
+          {FONT_OPTIONS.map((option) => (
+            <option key={option.value} value={option.value}>
+              {option.label}
+            </option>
+          ))}
+        </select>
+      </label>
+      <label className="toolbar-style-control">
+        <span>Size</span>
+        <input type="number" min={4} max={512} step={1} value={fontSizeValue} onChange={handleFontSizeChange} />
+      </label>
+      <label className="toolbar-style-control">
+        <span>Line Height</span>
+        <input
+          type="number"
+          min={0.5}
+          max={4}
+          step={0.05}
+          value={lineHeightValue}
+          onChange={handleLineHeightChange}
+        />
+      </label>
+      <div className="toolbar-style-control toolbar-style-control--justify">
+        <span>Align</span>
+        <div className="toolbar-align-group" role="group" aria-label="Text alignment">
+          <button
+            type="button"
+            className={`toolbar-align-button${textAlignValue === 'left' ? ' toolbar-align-button--active' : ''}`}
+            onClick={() => handleTextAlignChange('left')}
+            aria-pressed={textAlignValue === 'left'}
+          >
+            <AlignLeft size={16} />
+          </button>
+          <button
+            type="button"
+            className={`toolbar-align-button${textAlignValue === 'center' ? ' toolbar-align-button--active' : ''}`}
+            onClick={() => handleTextAlignChange('center')}
+            aria-pressed={textAlignValue === 'center'}
+          >
+            <AlignCenter size={16} />
+          </button>
+          <button
+            type="button"
+            className={`toolbar-align-button${textAlignValue === 'right' ? ' toolbar-align-button--active' : ''}`}
+            onClick={() => handleTextAlignChange('right')}
+            aria-pressed={textAlignValue === 'right'}
+          >
+            <AlignRight size={16} />
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+
   const toolbarSections: ToolbarSection[] = [
     {
       key: 'canvas',
@@ -397,6 +544,13 @@ export function SceneToolbar() {
           variant: 'accent',
         },
         {
+          key: 'text',
+          label: 'Text',
+          icon: <TypeIcon size={16} strokeWidth={1.8} />,
+          onClick: handleAddText,
+          variant: 'accent',
+        },
+        {
           key: 'upload',
           label: 'Upload image',
           icon: <ImageUp size={16} strokeWidth={1.8} />,
@@ -410,7 +564,12 @@ export function SceneToolbar() {
     {
       key: 'style',
       label: 'Style',
-      content: styleSectionContent,
+      content: (
+        <>
+          {styleSectionContent}
+          {textSectionContent}
+        </>
+      ),
     },
     {
       key: 'actions',

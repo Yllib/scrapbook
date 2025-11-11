@@ -241,6 +241,60 @@ body {
   border-radius: 0;
 }
 
+.toolbar-style-control--block {
+  grid-column: 1 / -1;
+}
+
+.toolbar-style-control--block textarea {
+  width: 100%;
+  min-height: 72px;
+  border-radius: 8px;
+  border: 1px solid rgba(148, 163, 184, 0.35);
+  background: rgba(15, 23, 42, 0.55);
+  color: #e2e8f0;
+  padding: 8px;
+  resize: vertical;
+  font-family: inherit;
+}
+
+.toolbar-text-controls {
+  margin-top: 16px;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 12px;
+}
+
+.toolbar-style-control select,
+.toolbar-style-control textarea {
+  color: #e2e8f0;
+  background: rgba(15, 23, 42, 0.55);
+  border: 1px solid rgba(148, 163, 184, 0.35);
+  border-radius: 8px;
+  padding: 6px;
+}
+
+.toolbar-align-group {
+  display: flex;
+  gap: 6px;
+}
+
+.toolbar-align-button {
+  width: 34px;
+  height: 34px;
+  border-radius: 8px;
+  border: 1px solid rgba(148, 163, 184, 0.35);
+  background: rgba(15, 23, 42, 0.55);
+  color: #e2e8f0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.toolbar-align-button--active {
+  border-color: rgba(56, 189, 248, 0.8);
+  color: #38bdf8;
+}
+
 .sr-only {
   position: absolute;
   width: 1px;

@@ -22,6 +22,7 @@
 - Follow the default ESLint configs (`apps/web/eslint.config.js`, `apps/api/eslint.config.mjs`). Stick to 2-space indentation in web, 2-space or Nest defaults in API.
 - Use descriptive file names (`*.service.ts`, `*.controller.ts`, React components in `PascalCase.tsx`).
 - Formatting: Prettier (via `pnpm --filter apps/api format`) for the API; Vite project follows ESLint + TypeScript rules.
+- Icons: when you need UI glyphs, pull them from `lucide-react` for consistency with the existing toolbar/settings menus.
 
 ## Testing Guidelines
 - API tests use Jest with `--runInBand`. Unit specs live next to source files (`*.spec.ts`).

@@ -6,7 +6,7 @@ import {
   type TileLevelDefinition,
 } from '../tiles/tileLevels'
 
-export type SceneNodeType = 'shape' | 'image'
+export type SceneNodeType = 'shape' | 'image' | 'text'
 export type ShapeType = 'rectangle' | 'ellipse' | 'polygon'
 
 export interface Vec2 {
@@ -28,6 +28,7 @@ export interface SceneNode {
   rotation: number
   shape?: ShapeDefinition
   image?: ImageDefinition
+  text?: TextDefinition
   aspectRatioLocked: boolean
   fill?: string
   stroke?: {
@@ -62,6 +63,15 @@ export type ShapeDefinition =
       points: Vec2[]
     }
 
+export interface TextDefinition {
+  content: string
+  fontFamily: string
+  fontSize: number
+  fontWeight: number
+  lineHeight: number
+  align: 'left' | 'center' | 'right'
+}
+
 export interface AABB {
   minX: number
   minY: number
@@ -90,6 +100,21 @@ const DEFAULT_POLYGON_POINTS: Vec2[] = [
   { x: 0.5, y: 0.5 },
   { x: -0.5, y: 0.5 },
 ]
+export const DEFAULT_FONT_FAMILY = 'Inter, \"Helvetica Neue\", Arial, sans-serif'
+export const DEFAULT_FONT_SIZE = 32
+const DEFAULT_FONT_WEIGHT = 400
+export const DEFAULT_LINE_HEIGHT = 1.2
+export const DEFAULT_TEXT_ALIGN: TextDefinition['align'] = 'left'
+export const DEFAULT_TEXT_CONTENT = 'Text'
+const TEXT_WIDTH_FACTOR = 0.62
+
+const estimateTextSize = (text: TextDefinition): Size2D => {
+  const lines = text.content.split(/\r?\n/)
+  const maxChars = lines.reduce((max, line) => Math.max(max, line.length), 1)
+  const width = Math.max(32, maxChars * text.fontSize * TEXT_WIDTH_FACTOR)
+  const height = Math.max(text.fontSize, lines.length * text.fontSize * text.lineHeight)
+  return { width, height }
+}
 
 interface SceneSnapshot {
   nodes: SceneNode[]
@@ -118,6 +143,9 @@ interface SceneState {
     image: ImageDefinition,
     overrides?: Partial<Omit<SceneNode, 'type' | 'image' | 'shape'>>, // images ignore shape overrides
   ) => SceneNode
+  createTextNode: (
+    overrides?: Partial<Omit<SceneNode, 'type' | 'text' | 'image' | 'shape'>> & { text?: Partial<TextDefinition> },
+  ) => SceneNode
   deleteNodes: (ids: string[]) => void
   renameNode: (id: string, name: string) => void
   clearSelection: () => void
@@ -136,6 +164,11 @@ interface SceneState {
   updateSelectedStroke: (stroke: Partial<{ color: string; width: number }>) => void
   updateSelectedCornerRadius: (cornerRadius: number) => void
   setSelectedAspectRatioLocked: (locked: boolean) => void
+  updateSelectedTextContent: (content: string) => void
+  setSelectedFontFamily: (fontFamily: string) => void
+  setSelectedFontSize: (fontSize: number) => void
+  setSelectedTextAlign: (align: TextDefinition['align']) => void
+  setSelectedLineHeight: (lineHeight: number) => void
   lockSelected: () => void
   unlockNodes: (ids: string[]) => void
   bringSelectedForward: () => void
@@ -223,6 +256,16 @@ const cloneNode = (node: SceneNode): SceneNode => ({
         grid: node.image.grid ? { ...node.image.grid } : undefined,
         tileLevels: node.image.tileLevels ? node.image.tileLevels.map((level) => ({ ...level })) : undefined,
         maxTileLevel: node.image.maxTileLevel,
+      }
+    : undefined,
+  text: node.text
+    ? {
+        content: node.text.content,
+        fontFamily: node.text.fontFamily,
+        fontSize: node.text.fontSize,
+        fontWeight: node.text.fontWeight,
+        lineHeight: node.text.lineHeight,
+        align: node.text.align,
       }
     : undefined,
   stroke: node.stroke ? { ...node.stroke } : undefined,
@@ -382,6 +425,46 @@ export const useSceneStore = create<SceneState>((set, get) => ({
       stroke: overrides.stroke,
       locked: overrides.locked ?? false,
       aspectRatioLocked: overrides.aspectRatioLocked ?? true,
+    }
+
+    set((prev) => {
+      const history = !prev.history.recording ? pushSnapshot(prev.history, createSnapshot(prev)) : prev.history
+      const nodes = [...prev.nodes, node]
+      return {
+        nodes,
+        selectedIds: [id],
+        lastSelectedId: id,
+        history,
+      }
+    })
+
+    return node
+  },
+  createTextNode: (overrides = {}) => {
+    const id = overrides.id ?? crypto.randomUUID()
+    const state = get()
+    const center = overrides.position ?? state.getWorldCenter()
+    const textDef: TextDefinition = {
+      content: overrides.text?.content ?? DEFAULT_TEXT_CONTENT,
+      fontFamily: overrides.text?.fontFamily ?? DEFAULT_FONT_FAMILY,
+      fontSize: overrides.text?.fontSize ?? DEFAULT_FONT_SIZE,
+      fontWeight: overrides.text?.fontWeight ?? DEFAULT_FONT_WEIGHT,
+      lineHeight: overrides.text?.lineHeight ?? DEFAULT_LINE_HEIGHT,
+      align: overrides.text?.align ?? DEFAULT_TEXT_ALIGN,
+    }
+    const size = overrides.size ?? estimateTextSize(textDef)
+    const node: SceneNode = {
+      id,
+      type: 'text',
+      name: overrides.name ?? `Text ${state.nodes.length + 1}`,
+      position: { x: center.x, y: center.y },
+      size: { width: size.width, height: size.height },
+      rotation: overrides.rotation ?? 0,
+      text: textDef,
+      fill: overrides.fill ?? DEFAULT_FILL,
+      stroke: overrides.stroke,
+      locked: overrides.locked ?? false,
+      aspectRatioLocked: overrides.aspectRatioLocked ?? false,
     }
 
     set((prev) => {
@@ -678,6 +761,97 @@ export const useSceneStore = create<SceneState>((set, get) => ({
         nodes,
         history,
       }
+    }),
+  updateSelectedTextContent: (content) =>
+    set((prev) => {
+      if (prev.selectedIds.length === 0) return prev
+      const selectedSet = new Set(prev.selectedIds)
+      let changed = false
+      const normalized = content ?? ''
+      const nodes = prev.nodes.map((node) => {
+        if (!selectedSet.has(node.id) || node.type !== 'text' || !node.text) return node
+        if (node.text.content === normalized) return node
+        changed = true
+        const text = { ...node.text, content: normalized }
+        const size = estimateTextSize(text)
+        return {
+          ...node,
+          text,
+          size,
+        }
+      })
+      if (!changed) return prev
+      const history = !prev.history.recording ? pushSnapshot(prev.history, createSnapshot(prev)) : prev.history
+      return { nodes, history }
+    }),
+  setSelectedFontFamily: (fontFamily) =>
+    set((prev) => {
+      if (!fontFamily || prev.selectedIds.length === 0) return prev
+      const selectedSet = new Set(prev.selectedIds)
+      let changed = false
+      const nodes = prev.nodes.map((node) => {
+        if (!selectedSet.has(node.id) || node.type !== 'text' || !node.text) return node
+        if (node.text.fontFamily === fontFamily) return node
+        changed = true
+        const text = { ...node.text, fontFamily }
+        const size = estimateTextSize(text)
+        return { ...node, text, size }
+      })
+      if (!changed) return prev
+      const history = !prev.history.recording ? pushSnapshot(prev.history, createSnapshot(prev)) : prev.history
+      return { nodes, history }
+    }),
+  setSelectedFontSize: (fontSize) =>
+    set((prev) => {
+      if (!Number.isFinite(fontSize) || fontSize <= 0 || prev.selectedIds.length === 0) return prev
+      const selectedSet = new Set(prev.selectedIds)
+      let changed = false
+      const nodes = prev.nodes.map((node) => {
+        if (!selectedSet.has(node.id) || node.type !== 'text' || !node.text) return node
+        if (node.text.fontSize === fontSize) return node
+        changed = true
+        const text = { ...node.text, fontSize }
+        const size = estimateTextSize(text)
+        return { ...node, text, size }
+      })
+      if (!changed) return prev
+      const history = !prev.history.recording ? pushSnapshot(prev.history, createSnapshot(prev)) : prev.history
+      return { nodes, history }
+    }),
+  setSelectedTextAlign: (align) =>
+    set((prev) => {
+      if (!align || prev.selectedIds.length === 0) return prev
+      const selectedSet = new Set(prev.selectedIds)
+      let changed = false
+      const nodes = prev.nodes.map((node) => {
+        if (!selectedSet.has(node.id) || node.type !== 'text' || !node.text) return node
+        if (node.text.align === align) return node
+        changed = true
+        return {
+          ...node,
+          text: { ...node.text, align },
+        }
+      })
+      if (!changed) return prev
+      const history = !prev.history.recording ? pushSnapshot(prev.history, createSnapshot(prev)) : prev.history
+      return { nodes, history }
+    }),
+  setSelectedLineHeight: (lineHeight) =>
+    set((prev) => {
+      if (!Number.isFinite(lineHeight) || lineHeight <= 0 || prev.selectedIds.length === 0) return prev
+      const selectedSet = new Set(prev.selectedIds)
+      let changed = false
+      const nodes = prev.nodes.map((node) => {
+        if (!selectedSet.has(node.id) || node.type !== 'text' || !node.text) return node
+        if (node.text.lineHeight === lineHeight) return node
+        changed = true
+        const text = { ...node.text, lineHeight }
+        const size = estimateTextSize(text)
+        return { ...node, text, size }
+      })
+      if (!changed) return prev
+      const history = !prev.history.recording ? pushSnapshot(prev.history, createSnapshot(prev)) : prev.history
+      return { nodes, history }
     }),
   lockSelected: () =>
     set((prev) => {

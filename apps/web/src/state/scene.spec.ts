@@ -5,6 +5,8 @@ import {
   worldToScreen,
   type SceneNode,
   type AABB,
+  DEFAULT_FONT_FAMILY,
+  DEFAULT_FONT_SIZE,
 } from './scene'
 
 const resetSceneStore = () => {
@@ -130,6 +132,30 @@ describe('scene store', () => {
     expect(imageNode.image?.grid?.rows).toBe(1)
     expect(imageNode.image?.tileLevels?.[0]).toEqual({ z: 0, columns: 2, rows: 1 })
     expect(imageNode.image?.maxTileLevel).toBe(0)
+  })
+
+  it('creates text nodes with defaults', () => {
+    const state = useSceneStore.getState()
+    const textNode = state.createTextNode()
+    expect(textNode.type).toBe('text')
+    expect(textNode.text?.content).toBeTruthy()
+    expect(textNode.text?.fontFamily).toBe(DEFAULT_FONT_FAMILY)
+    expect(textNode.text?.fontSize).toBe(DEFAULT_FONT_SIZE)
+    expect(textNode.size.width).toBeGreaterThan(0)
+  })
+
+  it('updates selected text content and font metrics', () => {
+    const state = useSceneStore.getState()
+    const node = state.createTextNode({ id: 'text-1' })
+    state.setSelection([node.id])
+    state.updateSelectedTextContent('Hello world')
+    let updated = useSceneStore.getState().nodes.find((n) => n.id === node.id)!
+    expect(updated.text?.content).toBe('Hello world')
+    const initialWidth = updated.size.width
+    state.setSelectedFontSize(64)
+    updated = useSceneStore.getState().nodes.find((n) => n.id === node.id)!
+    expect(updated.text?.fontSize).toBe(64)
+    expect(updated.size.width).toBeGreaterThan(initialWidth)
   })
 
   it('translates selection with undo/redo support', () => {

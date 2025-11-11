@@ -1,11 +1,22 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { Application, Assets, Container, Graphics, Sprite, TilingSprite, Texture } from 'pixi.js'
+import {
+  Application,
+  Assets,
+  BitmapFont,
+  BitmapText,
+  Container,
+  Graphics,
+  Sprite,
+  TilingSprite,
+  Texture,
+} from 'pixi.js'
 import {
   useSceneStore,
   screenToWorld,
   type SceneNode,
   type Vec2,
   type AABB,
+  type TextDefinition,
 } from '../state/scene'
 import { requestConfirmation } from '../state/dialog'
 import {
@@ -40,6 +51,8 @@ const assetTextureCache = new Map<string, Texture>()
 const assetTexturePromises = new Map<string, Promise<Texture>>()
 const tileTextureCache = new Map<string, Texture>()
 const tileTexturePromises = new Map<string, Promise<Texture>>()
+const bitmapFontCache = new Map<string, string>()
+const BASE_FONT_SIZE = 64
 
 function fetchAssetTexture(assetId: string) {
   if (assetTextureCache.has(assetId)) {
@@ -105,6 +118,7 @@ interface NodeVisual {
   image?: Sprite
   tileContainer?: Container
   tiles?: Map<string, Sprite>
+  text?: BitmapText
   activeTileLevel?: number
 }
 
@@ -1648,6 +1662,9 @@ function hideImageSprite(visual: NodeVisual) {
   if (visual.tileContainer) {
     visual.tileContainer.visible = false
   }
+  if (visual.text) {
+    visual.text.visible = false
+  }
 }
 
 function ensureTileContainer(visual: NodeVisual) {
@@ -1664,6 +1681,21 @@ function ensureTileContainer(visual: NodeVisual) {
   return visual.tileContainer
 }
 
+function ensureTextObject(visual: NodeVisual) {
+  if (!visual.text) {
+    const text = new BitmapText({
+      text: '',
+      fontSize: BASE_FONT_SIZE,
+    })
+    text.eventMode = 'none'
+    text.anchor?.set?.(0.5)
+    visual.container.addChildAt(text, 0)
+    visual.text = text
+  }
+  visual.text.visible = true
+  return visual.text
+}
+
 function renderNodeVisual(visual: NodeVisual, node: SceneNode, worldScale: number) {
   visual.node = node
   visual.container.position.set(node.position.x, node.position.y)
@@ -1672,6 +1704,24 @@ function renderNodeVisual(visual: NodeVisual, node: SceneNode, worldScale: numbe
   const { width, height } = node.size
   const halfWidth = width / 2
   const halfHeight = height / 2
+
+  if (node.type === 'text' && node.text) {
+    hideImageSprite(visual)
+    visual.body.visible = false
+    const textObject = ensureTextObject(visual)
+    const fontName = resolveBitmapFont(node.text)
+    if (textObject.fontName !== fontName) {
+      textObject.fontName = fontName
+    }
+    textObject.text = node.text.content
+    textObject.style.align = node.text.align
+    const scale = node.text.fontSize / BASE_FONT_SIZE
+    textObject.scale.set(scale)
+    textObject.tint = hexColorToNumber(node.fill, DEFAULT_FILL_COLOR)
+    textObject.updateText()
+    textObject.pivot.set(textObject.textWidth / 2, textObject.textHeight / 2)
+    return
+  }
 
   if (node.type === 'image' && node.image) {
     visual.body.visible = false
@@ -1877,4 +1927,20 @@ function addOriginMarker(world: Container) {
   marker.addChild(center)
   world.addChild(marker)
   return marker
+}
+function resolveBitmapFont(text: TextDefinition) {
+  const key = `${text.fontFamily}|${text.fontWeight}`
+  if (bitmapFontCache.has(key)) {
+    return bitmapFontCache.get(key)!
+  }
+  const fontName = `font-${Math.abs(key.split('').reduce((sum, ch) => sum + ch.charCodeAt(0), 0))}`
+  BitmapFont.from(fontName, {
+    fontFamily: text.fontFamily,
+    fontSize: BASE_FONT_SIZE,
+    fontWeight: text.fontWeight as any,
+    fill: '#ffffff',
+    strokeThickness: 0,
+  })
+  bitmapFontCache.set(key, fontName)
+  return fontName
 }
