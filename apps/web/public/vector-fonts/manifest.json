@@ -1,0 +1,27 @@
+{
+  "version": 1,
+  "generatedAt": "2025-11-12T01:11:24.154Z",
+  "entries": [
+    {
+      "family": "Inter",
+      "weight": 400,
+      "italic": false,
+      "style": "normal",
+      "data": "/vector-fonts/inter/regular.json"
+    },
+    {
+      "family": "Inter",
+      "weight": 400,
+      "italic": true,
+      "style": "italic",
+      "data": "/vector-fonts/inter/italic.json"
+    },
+    {
+      "family": "Inter",
+      "weight": 700,
+      "italic": false,
+      "style": "normal",
+      "data": "/vector-fonts/inter/bold.json"
+    }
+  ]
+}

@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import '@pixi/text-bitmap'
-import { Application, Assets, BitmapFont, BitmapText, Cache, Container, Graphics, Sprite, TilingSprite, Texture } from 'pixi.js'
+import { Application, Assets, Container, Graphics, Sprite, TilingSprite, Texture } from 'pixi.js'
 import {
   useSceneStore,
   screenToWorld,
@@ -15,7 +14,10 @@ import {
   type SelectionOverlayGeometry,
 } from './selectionOverlay'
 import { pickTileLevel } from '../tiles/tileLevels'
-import { resolveMsdfFont } from './text/msdfFont'
+import { VectorTextVisual } from './text/vectorTextVisual'
+import { layoutVectorText, type VectorTextLayout } from './text/vectorTextLayout'
+import { resolveVectorFont } from './text/vectorFont'
+import { normalizeFontRequest, type FontStyleRequest } from './text/fontUtils'
 
 const DPR_CAP = 1.5
 const MIN_ZOOM = 1e-6
@@ -43,7 +45,6 @@ const assetTextureCache = new Map<string, Texture>()
 const assetTexturePromises = new Map<string, Promise<Texture>>()
 const tileTextureCache = new Map<string, Texture>()
 const tileTexturePromises = new Map<string, Promise<Texture>>()
-const BASE_FONT_SIZE = 64
 
 function fetchAssetTexture(assetId: string) {
   if (assetTextureCache.has(assetId)) {
@@ -109,14 +110,14 @@ interface NodeVisual {
   image?: Sprite
   tileContainer?: Container
   tiles?: Map<string, Sprite>
-  text?: BitmapText
+  text?: VectorTextVisual
+  textLayout?: VectorTextLayout | null
   underline?: Graphics
   activeTileLevel?: number
   fontRequestToken?: symbol
-  fontName?: string
+  fontDescriptor?: ReturnType<typeof normalizeFontRequest>
+  textSignature?: string
 }
-
-type ResolvedMsdfFont = Awaited<ReturnType<typeof resolveMsdfFont>>
 
 function clamp(value: number, min: number, max: number) {
   return Math.min(Math.max(value, min), max)
@@ -1740,24 +1741,37 @@ function ensureTileContainer(visual: NodeVisual) {
   return visual.tileContainer
 }
 
-function ensureTextObject(visual: NodeVisual) {
+function ensureVectorText(visual: NodeVisual) {
   if (!visual.text) {
-    const text = new BitmapText({
-      text: '',
-      anchor: 0,
-      style: {
-        fontSize: BASE_FONT_SIZE,
-        fontFamily: 'sans-serif',
-        fill: '#ffffff',
-      },
-    })
-    text.eventMode = 'none'
-    text.anchor.set(0, 0)
-    text.visible = false
-    visual.container.addChildAt(text, 0)
-    visual.text = text
+    const vectorText = new VectorTextVisual()
+    vectorText.container.visible = false
+    visual.container.addChildAt(vectorText.container, 0)
+    visual.text = vectorText
+    visual.textLayout = null
   }
   return visual.text
+}
+
+function descriptorsEqual(
+  a: ReturnType<typeof normalizeFontRequest> | undefined,
+  b: ReturnType<typeof normalizeFontRequest> | undefined,
+): boolean {
+  if (!a || !b) return false
+  return a.family === b.family && a.weight === b.weight && a.italic === b.italic
+}
+
+function buildTextSignature(node: SceneNode): string {
+  const text = node.text
+  if (!text) return ''
+  return [
+    text.content,
+    text.fontFamily,
+    text.fontWeight,
+    text.fontStyle,
+    text.align,
+    text.lineHeight,
+    text.fontSize,
+  ].join('|')
 }
 
 // Align bitmap text vertically by its center and horizontally by center to match node bounding box
@@ -1783,57 +1797,77 @@ function renderNodeVisual(visual: NodeVisual, node: SceneNode, worldScale: numbe
   if (node.type === 'text' && node.text) {
     hideImageSprite(visual)
     visual.body.visible = false
-    const textObject = ensureTextObject(visual)
-    textObject.visible = true
-    const fallbackFamily = node.text.fontFamily || 'Inter'
-    if (textObject.style.fontFamily !== fallbackFamily) {
-      textObject.style.fontFamily = fallbackFamily
-    }
-    if (textObject.style.fontSize !== node.text.fontSize) {
-      textObject.style.fontSize = node.text.fontSize
-    }
-    if (textObject.style.fontStyle !== node.text.fontStyle) {
-      textObject.style.fontStyle = node.text.fontStyle
-    }
-    if (textObject.style.align !== node.text.align) {
-      textObject.style.align = node.text.align
-    }
-    const lineHeight = node.text.fontSize * node.text.lineHeight
-    if (textObject.style.lineHeight !== lineHeight) {
-      textObject.style.lineHeight = lineHeight
-    }
-    if (textObject.text !== node.text.content) {
-      textObject.text = node.text.content
-    }
-    textObject.tint = hexColorToNumber(node.fill, DEFAULT_FILL_COLOR)
-    fitFallbackTextObject(visual)
-    const requestToken = Symbol('font-request')
-    visual.fontRequestToken = requestToken
-    const nodeId = node.id
-
-    resolveMsdfFont({
+    const textVisual = ensureVectorText(visual)
+    const fillColor = hexColorToNumber(node.fill, DEFAULT_FILL_COLOR)
+    const fontRequest: FontStyleRequest = {
       fontFamily: node.text.fontFamily,
       fontWeight: node.text.fontWeight,
       fontStyle: node.text.fontStyle,
       fontSize: node.text.fontSize,
-    })
-      .then((atlas) => {
+    }
+
+    const normalizedDescriptor = normalizeFontRequest(fontRequest)
+    const signature = buildTextSignature(node)
+
+    if (
+      visual.textLayout &&
+      visual.textSignature === signature &&
+      textVisual.font &&
+      visual.fontDescriptor &&
+      descriptorsEqual(visual.fontDescriptor, normalizedDescriptor)
+    ) {
+      textVisual.update(textVisual.font, visual.textLayout, fillColor)
+      textVisual.container.visible = true
+      fitVectorTextVisual(visual)
+      updateUnderlineVisual(visual)
+      return
+    }
+
+    textVisual.container.visible = false
+    visual.textLayout = null
+    visual.fontDescriptor = normalizedDescriptor
+    visual.textSignature = undefined
+
+    const requestToken = Symbol('font-request')
+    visual.fontRequestToken = requestToken
+    const nodeId = node.id
+
+    resolveVectorFont(fontRequest)
+      .then((font) => {
         if (visual.fontRequestToken !== requestToken) {
           return
         }
-        if (visual.node.id !== nodeId || visual.text?.destroyed) {
+        if (visual.node.id !== nodeId || !visual.text) {
           return
         }
-        applyTextVisual(visual, atlas)
+
+        visual.fontRequestToken = undefined
+        const layout = layoutVectorText({
+          text: node.text!.content,
+          font,
+          fontSize: node.text!.fontSize,
+          lineHeight: node.text!.lineHeight,
+          align: node.text!.align,
+        })
+
+        textVisual.update(font, layout, fillColor)
+        textVisual.container.visible = true
+        visual.textLayout = layout
+        visual.textSignature = signature
+        fitVectorTextVisual(visual)
+        updateUnderlineVisual(visual)
       })
       .catch((error) => {
-        console.error('[stage] failed to generate MSDF font', error)
+        console.error('[stage] failed to load vector font', error)
         if (visual.fontRequestToken === requestToken) {
           visual.fontRequestToken = undefined
         }
-        if (visual.text && !visual.text.destroyed) {
-          visual.text.visible = true
-          fitFallbackTextObject(visual)
+        if (visual.text) {
+          visual.text.clear()
+          visual.text.container.visible = false
+        }
+        if (visual.underline) {
+          visual.underline.visible = false
         }
       })
     return
@@ -2023,53 +2057,19 @@ function drawSelectionOverlay(visual: NodeVisual, worldScale: number, isSelected
   })
 }
 
-type TextBounds = {
-  minX: number
-  minY: number
-  maxX: number
-  maxY: number
-  width: number
-  height: number
-}
-
-function resolveTextBounds(textObject: BitmapText): TextBounds {
-  const raw = textObject.getLocalBounds() as any
-  const minX = typeof raw?.minX === 'number' ? raw.minX : typeof raw?.x === 'number' ? raw.x : 0
-  const minY = typeof raw?.minY === 'number' ? raw.minY : typeof raw?.y === 'number' ? raw.y : 0
-  const widthCandidate =
-    typeof raw?.width === 'number'
-      ? raw.width
-      : typeof raw?.maxX === 'number'
-        ? raw.maxX - minX
-        : 0
-  const heightCandidate =
-    typeof raw?.height === 'number'
-      ? raw.height
-      : typeof raw?.maxY === 'number'
-        ? raw.maxY - minY
-        : 0
-  const width = Math.max(0, widthCandidate)
-  const height = Math.max(0, heightCandidate)
-  const maxX = typeof raw?.maxX === 'number' ? raw.maxX : minX + width
-  const maxY = typeof raw?.maxY === 'number' ? raw.maxY : minY + height
-  return { minX, minY, maxX, maxY, width: Math.max(0, maxX - minX), height: Math.max(0, maxY - minY) }
-}
-
-function fitFallbackTextObject(visual: NodeVisual) {
+function fitVectorTextVisual(visual: NodeVisual) {
   const node = visual.node
-  if (node.type !== 'text' || !node.text || !visual.text) {
+  if (node.type !== 'text' || !node.text || !visual.text || !visual.textLayout) {
     return
   }
 
-  const textObject = visual.text
-  const updateText = (textObject as unknown as { updateText?: (skipTransform?: boolean) => void }).updateText
-  updateText?.call(textObject, true)
+  const layout = visual.textLayout
+  const bounds = layout.bounds
+  const container = visual.text.container
 
-  const bounds = resolveTextBounds(textObject)
   if (bounds.width <= 0 || bounds.height <= 0) {
-    textObject.scale.set(1)
-    textObject.position.set(0, 0)
-    updateUnderlineVisual(visual, bounds)
+    container.scale.set(1)
+    container.position.set(0, 0)
     return
   }
 
@@ -2078,90 +2078,16 @@ function fitFallbackTextObject(visual: NodeVisual) {
   const fitScale = Math.min(widthScale, heightScale, 1) * TEXT_FIT_EPSILON
   const scale = Number.isFinite(fitScale) && fitScale > 0 ? fitScale : 1
 
-  textObject.pivot.set(0, 0)
-  textObject.scale.set(scale)
+  container.scale.set(scale)
 
   const centerX = bounds.minX + bounds.width / 2
   const centerY = bounds.minY + bounds.height / 2
-  textObject.position.set(-centerX * scale, -centerY * scale)
-
-  updateUnderlineVisual(visual, bounds)
+  container.position.set(-centerX * scale, -centerY * scale)
 }
 
-function fitMsdfTextObject(visual: NodeVisual) {
+function updateUnderlineVisual(visual: NodeVisual) {
   const node = visual.node
-  if (node.type !== 'text' || !node.text || !visual.text) {
-    return
-  }
-
-  const textObject = visual.text
-  const updateText = (textObject as unknown as { updateText?: (skipTransform?: boolean) => void }).updateText
-  updateText?.call(textObject, true)
-
-  const bounds = resolveTextBounds(textObject)
-  if (bounds.width <= 0 || bounds.height <= 0) {
-    textObject.scale.set(1)
-    textObject.position.set(0, 0)
-    updateUnderlineVisual(visual, bounds)
-    return
-  }
-
-  const widthScale = node.size.width > 0 ? node.size.width / bounds.width : 1
-  const heightScale = node.size.height > 0 ? node.size.height / bounds.height : 1
-  const fitScale = Math.min(widthScale, heightScale, 1) * TEXT_FIT_EPSILON
-  const scale = Number.isFinite(fitScale) && fitScale > 0 ? fitScale : 1
-
-  textObject.pivot.set(0, 0)
-  textObject.scale.set(scale)
-
-  const centerX = bounds.minX + bounds.width / 2
-  const centerY = bounds.minY + bounds.height / 2
-
-  let yCorrection = 0
-  if (visual.fontName) {
-    const cacheKey = `${visual.fontName}-bitmap`
-    const font = Cache.has(cacheKey) ? (Cache.get(cacheKey) as BitmapFont | undefined) : undefined
-    const metrics = font?.fontMetrics
-    if (metrics) {
-      yCorrection = ((metrics.ascent ?? 0) + (metrics.descent ?? 0) / 2)
-    }
-  }
-
-  textObject.position.set(-centerX * scale, (-centerY - yCorrection) * scale)
-
-  updateUnderlineVisual(visual, bounds)
-}
-
-function applyTextVisual(visual: NodeVisual, atlas: ResolvedMsdfFont) {
-  const node = visual.node
-  if (node.type !== 'text' || !node.text || !visual.text) {
-    return
-  }
-
-  visual.fontRequestToken = undefined
-  visual.fontName = atlas.name
-
-  const text = node.text
-  const textObject = visual.text
-
-  if (textObject.style.fontFamily !== atlas.name) {
-    textObject.style.fontFamily = atlas.name
-  }
-
-  textObject.style.fontSize = text.fontSize
-  textObject.style.fontStyle = text.fontStyle
-  textObject.style.align = text.align
-  textObject.style.lineHeight = text.fontSize * text.lineHeight
-  textObject.text = text.content
-  textObject.tint = hexColorToNumber(node.fill, DEFAULT_FILL_COLOR)
-  textObject.visible = true
-  fitMsdfTextObject(visual)
-
-}
-
-function updateUnderlineVisual(visual: NodeVisual, cachedBounds?: TextBounds) {
-  const node = visual.node
-  if (node.type !== 'text' || !node.text || !visual.text) {
+  if (node.type !== 'text' || !node.text || !visual.text || !visual.textLayout) {
     if (visual.underline) {
       visual.underline.visible = false
     }
@@ -2176,21 +2102,51 @@ function updateUnderlineVisual(visual: NodeVisual, cachedBounds?: TextBounds) {
   }
 
   const underline = ensureUnderline(visual)
-  const bounds = cachedBounds ?? resolveTextBounds(visual.text)
-  const scaleX = visual.text.scale.x
-  const scaleY = visual.text.scale.y
-  const left = visual.text.position.x + bounds.minX * scaleX
-  const right = visual.text.position.x + bounds.maxX * scaleX
-  const bottom = visual.text.position.y + bounds.maxY * scaleY
-  const lineY = bottom + Math.max(2, node.text.fontSize * scaleY * 0.06)
-  underline
-    .clear()
-    .moveTo(left, lineY)
-    .lineTo(right, lineY)
-    .stroke({
-      width: Math.max(1.5, node.text.fontSize * scaleY * 0.08),
-      color: hexColorToNumber(node.fill, DEFAULT_FILL_COLOR),
-    })
+  const layout = visual.textLayout
+  const container = visual.text.container
+  const font = visual.text.font
+
+  if (!font) {
+    underline.visible = false
+    return
+  }
+
+  underline.clear()
+
+  const fitScale = container.scale.x
+  const color = hexColorToNumber(node.fill, DEFAULT_FILL_COLOR)
+  const underlinePadding = Math.max(2, node.text.fontSize * fitScale * 0.06)
+  const strokeWidth = Math.max(1.5, node.text.fontSize * fitScale * 0.08)
+  const descenderDistance = Math.abs(font.metrics.descender) * layout.scale * fitScale
+
+  let segments = 0
+
+  for (const line of layout.lines) {
+    if (!Number.isFinite(line.minX) || !Number.isFinite(line.maxX)) {
+      continue
+    }
+    const lineWidth = line.maxX - line.minX
+    if (!(lineWidth > 0)) {
+      continue
+    }
+    const left = container.position.x + line.minX * fitScale
+    const right = container.position.x + line.maxX * fitScale
+    const baseline = container.position.y + line.baseline * fitScale
+    const underlineY = baseline + descenderDistance + underlinePadding
+    underline.moveTo(left, underlineY)
+    underline.lineTo(right, underlineY)
+    segments += 1
+  }
+
+  if (segments === 0) {
+    underline.visible = false
+    return
+  }
+
+  underline.stroke({
+    width: strokeWidth,
+    color,
+  })
   underline.visible = true
 }
 

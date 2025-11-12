@@ -5,6 +5,9 @@ import {
   normalizeTileLevels,
   type TileLevelDefinition,
 } from '../tiles/tileLevels'
+import { normalizeFontRequest } from '../canvas/text/fontUtils'
+import { getLoadedVectorFont, resolveVectorFontByDescriptor } from '../canvas/text/vectorFont'
+import { layoutVectorText } from '../canvas/text/vectorTextLayout'
 
 export type SceneNodeType = 'shape' | 'image' | 'text'
 export type ShapeType = 'rectangle' | 'ellipse' | 'polygon'
@@ -113,6 +116,31 @@ const TEXT_MEASURE_CANVAS = typeof document !== 'undefined' ? document.createEle
 const TEXT_MEASURE_CTX = TEXT_MEASURE_CANVAS ? TEXT_MEASURE_CANVAS.getContext('2d') : null
 
 const measureTextSize = (text: TextDefinition): Size2D => {
+  const descriptor = normalizeFontRequest({
+    fontFamily: text.fontFamily,
+    fontWeight: text.fontWeight,
+    fontStyle: text.fontStyle,
+    fontSize: text.fontSize,
+  })
+
+  const vectorFont = getLoadedVectorFont(descriptor)
+  if (vectorFont) {
+    const layout = layoutVectorText({
+      text: text.content,
+      font: vectorFont,
+      fontSize: text.fontSize,
+      lineHeight: text.lineHeight,
+      align: text.align,
+    })
+    return {
+      width: Math.max(32, layout.bounds.width),
+      height: Math.max(32, layout.bounds.height),
+    }
+  }
+
+  // Trigger async load for future measurements.
+  resolveVectorFontByDescriptor(descriptor).catch(() => {})
+
   const lines = text.content.split(/\r?\n/)
   if (TEXT_MEASURE_CTX && TEXT_MEASURE_CANVAS) {
     TEXT_MEASURE_CTX.font = `${text.fontStyle} ${text.fontWeight} ${text.fontSize}px ${text.fontFamily}`

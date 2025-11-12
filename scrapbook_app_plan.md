@@ -79,7 +79,7 @@ Database tables:
 - Texture: atlas for small sprites, individual textures for photos
 - Culling via rbush spatial index
 - Max 200 draw calls/frame
-- SDF text glyphs via worker
+- Vector text glyphs via precomputed geometry loader
 - Gizmos on overlay layer
 
 ## 5) Infinite Canvas
@@ -583,4 +583,3 @@ docker compose up -d --build
 - Android 11–15 Chrome, Samsung Internet
 - Screen sizes: 360×780, 414×896, 768×1024, 1280×800
 - Test cases: pan/zoom/rotate, text edit with keyboard, upload from camera, offline open/edit/sync
-
