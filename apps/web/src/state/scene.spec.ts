@@ -103,6 +103,15 @@ describe('scene store', () => {
     expect(backToScreen.y).toBeCloseTo(screenPoint.y, 6)
   })
 
+  it('exposes updated world scale for UI zoom readouts', () => {
+    const state = useSceneStore.getState()
+    state.updateWorldTransform({ position: { x: 0, y: 0 }, scale: 4 })
+    expect(useSceneStore.getState().world.scale).toBeCloseTo(4)
+
+    state.updateWorldTransform({ scale: 0.25 })
+    expect(useSceneStore.getState().world.scale).toBeCloseTo(0.25)
+  })
+
   it('creates shape nodes with defaults', () => {
     const state = useSceneStore.getState()
     const shape = state.createShapeNode({ kind: 'ellipse' })

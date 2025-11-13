@@ -5,7 +5,7 @@
 - Targets: desktop, tablet, phone (Chrome, Safari, Firefox; iOS/iPadOS 16+, Android 11+)
 - Performance: 60 fps target. Allow 30 fps minimum on mid-tier phones during heavy pans.
 - Memory budgets: \~256 MB GPU textures mobile, \~1 GB desktop. Cap devicePixelRatio at 1.5 on mobile.
-- Infinite 2D world coordinates
+- Infinite 2D world coordinates with camera math that never clamps pan/zoom
 - Undo/redo with command log and snapshots
 - Scene JSON <1 MB per 1k nodes (excluding assets)
 
@@ -84,9 +84,8 @@ Database tables:
 
 ## 5) Infinite Canvas
 
-- Wheel zoom anchored to cursor
-- Clamp zoom 1e-4–1e4
-- Pan with inertia
+- Wheel zoom anchored to cursor, no upper/lower clamp—camera scale must support effectively infinite zoom in and out.
+- Pan with inertia and no world bounds; re-center transforms under the hood to avoid floating-point drift instead of stopping the user.
 
 ## 6) Spatial Index
 

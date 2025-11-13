@@ -39,8 +39,18 @@ interface VectorFontAssetGlyph {
   geometry: {
     positions: number[]
     indices: number[]
+    contours: VectorGlyphContour[]
   }
 }
+
+export type VectorGlyphCommand =
+  | { type: 'moveTo'; x: number; y: number }
+  | { type: 'lineTo'; x: number; y: number }
+  | { type: 'quadraticCurveTo'; x1: number; y1: number; x: number; y: number }
+  | { type: 'bezierCurveTo'; x1: number; y1: number; x2: number; y2: number; x: number; y: number }
+  | { type: 'closePath' }
+
+export type VectorGlyphContour = VectorGlyphCommand[]
 
 export interface GlyphBounds {
   minX: number
@@ -70,6 +80,7 @@ export interface VectorFontGlyph {
   positions: Float32Array
   indices: Uint32Array
   uvs: Float32Array
+  contours: VectorGlyphContour[]
   meshGeometry?: MeshGeometry
 }
 
@@ -204,6 +215,7 @@ function parseVectorFontAsset(asset: VectorFontAsset, entry: ManifestEntry): Vec
       positions,
       indices,
       uvs,
+      contours: glyphAsset.geometry.contours ?? [],
     }
 
     glyphMap.set(codePoint, glyph)
@@ -244,6 +256,9 @@ function parseVectorFontAsset(asset: VectorFontAsset, entry: ManifestEntry): Vec
   }
   if (!fallbackGlyph) {
     fallbackGlyph = glyphMap.values().next().value
+  }
+  if (!fallbackGlyph) {
+    throw new Error('Vector font asset contained no glyphs')
   }
 
   const font: VectorFont = {
@@ -350,6 +365,7 @@ function createPlaceholderFont(descriptor: NormalizedFontDescriptor): VectorFont
       positions,
       indices: glyphIndices,
       uvs: new Float32Array(positions.length),
+      contours: [],
     }
 
     glyphs.set(code, glyph)

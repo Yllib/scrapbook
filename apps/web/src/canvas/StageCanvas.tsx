@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { Application, Assets, Container, Graphics, Sprite, TilingSprite, Texture } from 'pixi.js'
+import { Application, Assets, Container, Graphics, Sprite, Texture } from 'pixi.js'
 import {
   useSceneStore,
   screenToWorld,
   type SceneNode,
   type Vec2,
   type AABB,
+  type Size2D,
 } from '../state/scene'
 import { requestConfirmation } from '../state/dialog'
 import {
@@ -18,14 +19,13 @@ import { VectorTextVisual } from './text/vectorTextVisual'
 import { layoutVectorText, type VectorTextLayout } from './text/vectorTextLayout'
 import { resolveVectorFont } from './text/vectorFont'
 import { normalizeFontRequest, type FontStyleRequest } from './text/fontUtils'
+import { CameraNormalizer } from './camera/cameraNormalizer'
 
 const DPR_CAP = 1.5
 const MIN_ZOOM = 1e-6
 const MAX_ZOOM = Number.POSITIVE_INFINITY
-const NORMALIZE_MIN_SCALE = 1e-5
-const NORMALIZE_MAX_SCALE = 128
-const NORMALIZE_FACTOR = 2
-const GRID_SIZE = 64
+const GRID_MAJOR_BASE = 64
+const GRID_MIN_SCREEN_SPACING = 24
 const DRAG_THRESHOLD = 4
 const SELECTION_COLOR = 0x38bdf8
 const HANDLE_HIT_PADDING = 2
@@ -121,72 +121,6 @@ interface NodeVisual {
 
 function clamp(value: number, min: number, max: number) {
   return Math.min(Math.max(value, min), max)
-}
-
-function ensureScale(value: number) {
-  if (Math.abs(value) < MIN_ZOOM) {
-    return value >= 0 ? MIN_ZOOM : -MIN_ZOOM
-  }
-  return value
-}
-
-function createGridTexture(size = GRID_SIZE, background = '#0f172a') {
-  const canvas = document.createElement('canvas')
-  canvas.width = size
-  canvas.height = size
-  const ctx = canvas.getContext('2d')
-  if (!ctx) {
-    throw new Error('Unable to acquire 2D context for grid texture')
-  }
-
-  ctx.fillStyle = background
-  ctx.fillRect(0, 0, size, size)
-
-  const half = size / 2
-  const minorStep = size / 4
-  const crisp = (value: number) => Math.round(value) + 0.5
-
-  ctx.strokeStyle = 'rgba(148, 163, 184, 0.12)'
-  ctx.lineWidth = 1
-  ctx.beginPath()
-  for (let x = minorStep; x < size; x += minorStep) {
-    if (Math.abs(x - half) < 1e-6) continue
-    const px = crisp(x)
-    ctx.moveTo(px, 0)
-    ctx.lineTo(px, size)
-  }
-  for (let y = minorStep; y < size; y += minorStep) {
-    if (Math.abs(y - half) < 1e-6) continue
-    const py = crisp(y)
-    ctx.moveTo(0, py)
-    ctx.lineTo(size, py)
-  }
-  ctx.stroke()
-
-  ctx.strokeStyle = 'rgba(241, 245, 249, 0.22)'
-  ctx.lineWidth = 1
-  ctx.beginPath()
-  ctx.moveTo(0, 0.5)
-  ctx.lineTo(size, 0.5)
-  ctx.moveTo(0.5, 0)
-  ctx.lineTo(0.5, size)
-  ctx.moveTo(0, crisp(size - 1))
-  ctx.lineTo(size, crisp(size - 1))
-  ctx.moveTo(crisp(size - 1), 0)
-  ctx.lineTo(crisp(size - 1), size)
-  ctx.stroke()
-
-  ctx.strokeStyle = 'rgba(59, 130, 246, 1)'
-  ctx.lineWidth = 1.5
-  ctx.beginPath()
-  const axis = crisp(half)
-  ctx.moveTo(0, axis)
-  ctx.lineTo(size, axis)
-  ctx.moveTo(axis, 0)
-  ctx.lineTo(axis, size)
-  ctx.stroke()
-
-  return Texture.from(canvas)
 }
 
 function hexColorToNumber(color: string | undefined, fallback: number): number {
@@ -431,7 +365,7 @@ export function StageCanvas() {
       view.style.height = '100%'
       view.style.touchAction = 'none'
 
-      cleanupScene = configureScene(app, host, view, setUnlockMenu, initialBackground)
+      cleanupScene = configureScene(app, host, view, setUnlockMenu)
     }
 
     setup()
@@ -465,25 +399,20 @@ function configureScene(
   host: HTMLDivElement,
   view: HTMLCanvasElement,
   setUnlockMenu: (value: { x: number; y: number; nodeId: string; name: string } | null) => void,
-  initialBackground: string,
 ) {
   const storeApi = useSceneStore
   const world = new Container()
   world.sortableChildren = true
+  const gridLayer = new Graphics()
+  gridLayer.zIndex = -1_000_000
+  gridLayer.eventMode = 'none'
   const overlay = new Container()
   overlay.eventMode = 'none'
-  const gridTexture = createGridTexture(GRID_SIZE, initialBackground)
-  const grid = new TilingSprite({
-    texture: gridTexture,
-    width: app.renderer.width,
-    height: app.renderer.height,
-  })
-  grid.alpha = 1
 
-  app.stage.addChild(grid)
+  world.addChild(gridLayer)
   app.stage.addChild(world)
   app.stage.addChild(overlay)
-  grid.visible = storeApi.getState().showGrid
+  gridLayer.visible = storeApi.getState().showGrid
 
   const { setCapture, releaseCapture } = createPointerCaptureHelpers(view)
 
@@ -499,24 +428,73 @@ function configureScene(
 
   const originMarker = addOriginMarker(world)
   originMarker.visible = storeApi.getState().showOrigin
-  grid.visible = storeApi.getState().showGrid
+  gridLayer.visible = storeApi.getState().showGrid
 
   world.position.set(app.renderer.width / 2, app.renderer.height / 2)
   view.style.cursor = 'default'
 
+  const initialWorldState = useSceneStore.getState().world
+  const camera = new CameraNormalizer(initialWorldState.scale, {
+    x: initialWorldState.position.x || world.position.x,
+    y: initialWorldState.position.y || world.position.y,
+  })
+
   const nodeVisuals = new Map<string, NodeVisual>()
   let selectedIdSet = new Set(storeApi.getState().selectedIds)
 
+  const getSceneScale = () => camera.getSceneScale()
+  const getRenderScale = () => camera.getRenderScale()
+
+  let lastSceneScale = getSceneScale()
+  let lastRenderLengthFactor = camera.lengthToRender(1)
+  let lastCameraOrigin = camera.getOrigin()
+
   const refreshImageLODs = () => {
-    const scale = world.scale.x
+    const scale = getSceneScale()
     nodeVisuals.forEach((visual) => {
       if (visual.node.type === 'image') {
-        renderImageTiles(visual, visual.node, scale)
+        renderImageTiles(visual, visual.node, scale, camera)
       }
     })
   }
 
-  let lastWorldScale = world.scale.x
+  const updateNodeRenderPositions = () => {
+    nodeVisuals.forEach((visual) => {
+      const renderPosition = camera.sceneToRender(visual.node.position)
+      visual.container.position.set(renderPosition.x, renderPosition.y)
+    })
+  }
+
+  const rebuildSceneForScaleBasis = () => {
+    const scale = getSceneScale()
+    nodeVisuals.forEach((visual) => {
+      renderNodeVisual(visual, visual.node, scale, camera)
+    })
+    redrawSelection()
+  }
+
+  const applyCameraTransform = () => {
+    const renderTranslation = camera.getRenderTranslation()
+    const renderScale = getRenderScale()
+    world.position.set(renderTranslation.x, renderTranslation.y)
+    world.scale.set(renderScale)
+
+    const origin = camera.getOrigin()
+    const lengthFactor = camera.lengthToRender(1)
+    const originChanged = origin.x !== lastCameraOrigin.x || origin.y !== lastCameraOrigin.y
+    const scaleBasisChanged = Math.abs(lengthFactor - lastRenderLengthFactor) > 1e-9
+
+    if (scaleBasisChanged) {
+      rebuildSceneForScaleBasis()
+      updateGrid()
+    } else if (originChanged) {
+      updateNodeRenderPositions()
+      updateGroupSelectionOverlay()
+    }
+
+    lastCameraOrigin = origin
+    lastRenderLengthFactor = lengthFactor
+  }
 
   const pointer = {
     pointerId: null as number | null,
@@ -565,52 +543,19 @@ function configureScene(
     return false
   }
 
-  const scaleNodeDimensions = (node: SceneNode, factor: number): SceneNode => {
-    const position = { x: node.position.x * factor, y: node.position.y * factor }
-    const size = { width: node.size.width * factor, height: node.size.height * factor }
-
-    let shape = node.shape
-    if (shape?.kind === 'rectangle') {
-      const maxRadius = Math.min(size.width, size.height) / 2
-      shape = {
-        kind: 'rectangle',
-        cornerRadius: Math.min((shape.cornerRadius ?? 0) * factor, maxRadius),
-      }
-    } else if (shape?.kind === 'polygon') {
-      shape = {
-        kind: 'polygon',
-        points: shape.points.map((point) => ({ ...point })),
-      }
-    } else if (shape?.kind === 'ellipse') {
-      shape = { kind: 'ellipse' }
-    }
-
-    const stroke = node.stroke
-      ? {
-          ...node.stroke,
-          width: node.stroke.width * factor,
-        }
-      : undefined
-
-    return {
-      ...node,
-      position,
-      size,
-      shape,
-      stroke,
-    }
-  }
-
   const currentWorldTransform = () => ({
-    position: { x: world.position.x, y: world.position.y },
-    scale: world.scale.x,
+    position: camera.getScenePosition(),
+    scale: getSceneScale(),
   })
 
   const syncWorldTransform = () => {
     storeApi
       .getState()
-      .updateWorldTransform({ position: { x: world.position.x, y: world.position.y }, scale: world.scale.x })
+      .updateWorldTransform({ position: camera.getScenePosition(), scale: getSceneScale() })
   }
+
+  applyCameraTransform()
+  syncWorldTransform()
 
   const syncViewport = () => {
     storeApi
@@ -670,27 +615,97 @@ function configureScene(
   }
 
   const updateGrid = () => {
-    const scaleX = ensureScale(world.scale.x)
-    const scaleY = ensureScale(world.scale.y)
+    gridLayer.clear()
+    if (!gridLayer.visible) {
+      return
+    }
+    const sceneScale = getSceneScale()
+    const transform = currentWorldTransform()
     const viewportWidth = app.renderer.width
     const viewportHeight = app.renderer.height
-    const viewportCenterX = viewportWidth / 2
-    const viewportCenterY = viewportHeight / 2
+    const topLeft = screenToWorld({ x: 0, y: 0 }, transform)
+    const bottomRight = screenToWorld({ x: viewportWidth, y: viewportHeight }, transform)
+    const minX = Math.min(topLeft.x, bottomRight.x)
+    const maxX = Math.max(topLeft.x, bottomRight.x)
+    const minY = Math.min(topLeft.y, bottomRight.y)
+    const maxY = Math.max(topLeft.y, bottomRight.y)
 
-    grid.width = viewportWidth
-    grid.height = viewportHeight
-    grid.pivot.set(viewportCenterX, viewportCenterY)
-    grid.position.set(viewportCenterX, viewportCenterY)
-    grid.scale.set(1, 1)
-    grid.tileScale.set(scaleX, scaleY)
+    const worldPerPixel = 1 / Math.max(sceneScale, Number.EPSILON)
+    const desiredMajorPx = GRID_MIN_SCREEN_SPACING * 2
+    const baseSpacingPx = GRID_MAJOR_BASE / worldPerPixel
+    let power = 0
+    if (baseSpacingPx > 0 && Number.isFinite(baseSpacingPx)) {
+      power = Math.round(Math.log2(desiredMajorPx / baseSpacingPx))
+    }
+    let spacing = GRID_MAJOR_BASE * 2 ** power
+    if (!Number.isFinite(spacing) || spacing <= 0) {
+      spacing = GRID_MAJOR_BASE
+    }
 
-    const stageOriginX = world.position.x
-    const stageOriginY = world.position.y
-    const half = GRID_SIZE / 2
-    grid.tilePosition.set(stageOriginX - scaleX * half, stageOriginY - scaleY * half)
+    let spacingPx = spacing / worldPerPixel
+    while (spacingPx < GRID_MIN_SCREEN_SPACING) {
+      spacing *= 2
+      spacingPx = spacing / worldPerPixel
+    }
+    while (spacingPx > GRID_MIN_SCREEN_SPACING * 4) {
+      spacing /= 2
+      spacingPx = spacing / worldPerPixel
+    }
+
+    const drawLines = (step: number, color: number, alpha: number, widthScene: number) => {
+      if (!Number.isFinite(step) || step <= 0) return
+      const startX = Math.floor(minX / step) * step
+      const startY = Math.floor(minY / step) * step
+      const strokeWidth = camera.lengthToRender(widthScene)
+      for (let x = startX; x <= maxX; x += step) {
+        const top = camera.sceneToRender({ x, y: minY })
+        const bottom = camera.sceneToRender({ x, y: maxY })
+        gridLayer.moveTo(top.x, top.y)
+        gridLayer.lineTo(bottom.x, bottom.y)
+      }
+      for (let y = startY; y <= maxY; y += step) {
+        const left = camera.sceneToRender({ x: minX, y })
+        const right = camera.sceneToRender({ x: maxX, y })
+        gridLayer.moveTo(left.x, left.y)
+        gridLayer.lineTo(right.x, right.y)
+      }
+      gridLayer.stroke({ color, alpha, width: strokeWidth })
+    }
+
+    const majorWidthScene = Math.max(1.6 / sceneScale, 1 / sceneScale)
+    const minorWidthScene = Math.max(majorWidthScene * 0.65, 0.55 / sceneScale)
+    const microWidthScene = Math.max(minorWidthScene * 0.75, 0.4 / sceneScale)
+
+    const minorSpacing = spacing / 2
+    const microSpacing = spacing / 4
+    const minorSpacingPx = spacingPx / 2
+    const microSpacingPx = spacingPx / 4
+
+    if (microSpacingPx >= GRID_MIN_SCREEN_SPACING / 3) {
+      drawLines(microSpacing, 0x1e293b, 0.35, microWidthScene)
+    }
+    if (minorSpacingPx >= GRID_MIN_SCREEN_SPACING / 1.5) {
+      drawLines(minorSpacing, 0x273449, 0.45, minorWidthScene)
+    }
+    drawLines(spacing, 0x0f172a, 0.75, majorWidthScene)
+
+    const axisWidthScene = Math.max(2 / sceneScale, 1 / sceneScale)
+    gridLayer.stroke({ color: 0x2563eb, alpha: 0.8, width: camera.lengthToRender(axisWidthScene) })
+    if (minX <= 0 && maxX >= 0) {
+      const start = camera.sceneToRender({ x: 0, y: minY })
+      const end = camera.sceneToRender({ x: 0, y: maxY })
+      gridLayer.moveTo(start.x, start.y)
+      gridLayer.lineTo(end.x, end.y)
+    }
+    if (minY <= 0 && maxY >= 0) {
+      const start = camera.sceneToRender({ x: minX, y: 0 })
+      const end = camera.sceneToRender({ x: maxX, y: 0 })
+      gridLayer.moveTo(start.x, start.y)
+      gridLayer.lineTo(end.x, end.y)
+    }
   }
 
-  const updateGroupSelectionOverlay = () => {
+  function updateGroupSelectionOverlay() {
     const selectedNodes = storeApi
       .getState()
       .nodes.filter((node) => selectedIdSet.has(node.id))
@@ -703,33 +718,50 @@ function configureScene(
       return
     }
 
-    const sizing = calculateSelectionHandleSizing(world.scale.x)
+    const sizingScene = calculateSelectionHandleSizing(getSceneScale())
+    const sizing = {
+      strokeWidth: camera.lengthToRender(sizingScene.strokeWidth),
+      cornerRadius: camera.lengthToRender(sizingScene.cornerRadius),
+      edgeRadius: camera.lengthToRender(sizingScene.edgeRadius),
+      rotationRadius: camera.lengthToRender(sizingScene.rotationRadius),
+    }
 
     groupSelection.visible = true
     groupSelection.clear()
-    groupSelection.position.set(overlayGeometry.center.x, overlayGeometry.center.y)
+    const renderCenter = camera.sceneToRender(overlayGeometry.center)
+    groupSelection.position.set(renderCenter.x, renderCenter.y)
     groupSelection.rotation = overlayGeometry.rotation
 
-    const halfWidth = overlayGeometry.width / 2
-    const halfHeight = overlayGeometry.height / 2
+    const halfWidthScene = overlayGeometry.width / 2
+    const halfHeightScene = overlayGeometry.height / 2
+    const halfWidth = camera.lengthToRender(halfWidthScene)
+    const halfHeight = camera.lengthToRender(halfHeightScene)
+    const fullWidth = halfWidth * 2
+    const fullHeight = halfHeight * 2
 
-    groupSelection
-      .rect(-halfWidth, -halfHeight, overlayGeometry.width, overlayGeometry.height)
-      .stroke({ color: 0xffffff, alpha: 0.65, width: sizing.strokeWidth })
+    groupSelection.rect(-halfWidth, -halfHeight, fullWidth, fullHeight).stroke({ color: 0xffffff, alpha: 0.65, width: sizing.strokeWidth })
+
+    const toRenderLocal = (point: Vec2): Vec2 => ({
+      x: camera.lengthToRender(point.x),
+      y: camera.lengthToRender(point.y),
+    })
 
     overlayGeometry.corners.forEach((corner) => {
-      groupSelection.circle(corner.x, corner.y, sizing.cornerRadius).fill({ color: 0x38bdf8, alpha: 0.95 })
+      const renderCorner = toRenderLocal(corner)
+      groupSelection.circle(renderCorner.x, renderCorner.y, sizing.cornerRadius).fill({ color: 0x38bdf8, alpha: 0.95 })
     })
 
     overlayGeometry.edges.forEach((edge) => {
-      groupSelection.circle(edge.x, edge.y, sizing.edgeRadius).fill({ color: 0x0ea5e9, alpha: 0.85 })
+      const renderEdge = toRenderLocal(edge)
+      groupSelection.circle(renderEdge.x, renderEdge.y, sizing.edgeRadius).fill({ color: 0x0ea5e9, alpha: 0.85 })
     })
 
-    const armLength = 60 / world.scale.x
+    const armLengthScene = 60 / getSceneScale()
+    const armLength = camera.lengthToRender(armLengthScene)
     const rotationArmStart = -halfHeight
     const rotationArmEnd = rotationArmStart - armLength
 
-    overlayGeometry.rotationHandle = { x: 0, y: rotationArmEnd }
+    overlayGeometry.rotationHandle = { x: 0, y: -halfHeightScene - armLengthScene }
 
     groupSelection.moveTo(0, rotationArmStart)
     groupSelection.lineTo(0, rotationArmEnd)
@@ -738,7 +770,7 @@ function configureScene(
   }
 
   const detectHandleAtPoint = (worldPoint: Vec2, overlayGeometry: SelectionOverlayGeometry): HandleType | null => {
-    const scale = Math.max(Math.abs(world.scale.x), Number.EPSILON)
+    const scale = Math.max(Math.abs(getSceneScale()), Number.EPSILON)
     const sizing = calculateSelectionHandleSizing(scale)
     const minThreshold = HANDLE_HIT_MIN_PX / scale
     const cornerThreshold = Math.max(sizing.cornerRadius * HANDLE_HIT_PADDING, minThreshold)
@@ -820,10 +852,10 @@ function configureScene(
     return found
   }
 
-  const redrawSelection = () => {
-    const scale = world.scale.x
+  function redrawSelection() {
+    const scale = getSceneScale()
     nodeVisuals.forEach((visual, id) => {
-      drawSelectionOverlay(visual, scale, selectedIdSet.has(id))
+      drawSelectionOverlay(visual, scale, selectedIdSet.has(id), camera)
     })
     updateGroupSelectionOverlay()
   }
@@ -858,7 +890,7 @@ function configureScene(
       visual.container.zIndex = index
     }
 
-    renderNodeVisual(visual, node, world.scale.x)
+    renderNodeVisual(visual, node, getSceneScale(), camera)
   }
 
   const removeNodeVisual = (id: string) => {
@@ -901,7 +933,8 @@ function configureScene(
       redrawSelection()
     }
     if (state.showGrid !== prevState.showGrid) {
-      grid.visible = state.showGrid
+      gridLayer.visible = state.showGrid
+      updateGrid()
     }
     if (state.showOrigin !== prevState.showOrigin) {
       originMarker.visible = state.showOrigin
@@ -909,21 +942,16 @@ function configureScene(
     if (state.backgroundColor !== prevState.backgroundColor) {
       const color = hexColorToNumber(state.backgroundColor, 0x020617)
       app.renderer.background.color = color
-      const newTexture = createGridTexture(GRID_SIZE, state.backgroundColor ?? '#020617')
-      grid.texture.destroy(true)
-      grid.texture = newTexture
-      const scaleX = ensureScale(world.scale.x)
-      const scaleY = ensureScale(world.scale.y)
-      grid.tileScale.set(scaleX, scaleY)
       updateGrid()
     }
   })
 
   const ticker = () => {
     updateGrid()
-    if (Math.abs(world.scale.x - lastWorldScale) > 1e-4) {
+    const effectiveScale = getSceneScale()
+    if (Math.abs(effectiveScale - lastSceneScale) > 1e-4) {
       refreshImageLODs()
-      lastWorldScale = world.scale.x
+      lastSceneScale = effectiveScale
     }
   }
   app.ticker.add(ticker)
@@ -944,51 +972,6 @@ function configureScene(
     return [first.value, second.value] as const
   }
 
-  const normalizeWorldScale = () => {
-    let adjusted = false
-
-    const shrinkScene = () => {
-      world.scale.set(world.scale.x / NORMALIZE_FACTOR)
-      storeApi.setState((prev) => ({
-        nodes: prev.nodes.map((node) => scaleNodeDimensions(node, NORMALIZE_FACTOR)),
-        world: {
-          position: { ...prev.world.position },
-          scale: world.scale.x,
-        },
-      }))
-      adjusted = true
-    }
-
-    const growScene = () => {
-      world.scale.set(world.scale.x * NORMALIZE_FACTOR)
-      storeApi.setState((prev) => ({
-        nodes: prev.nodes.map((node) => scaleNodeDimensions(node, 1 / NORMALIZE_FACTOR)),
-        world: {
-          position: { ...prev.world.position },
-          scale: world.scale.x,
-        },
-      }))
-      adjusted = true
-    }
-
-    while (world.scale.x > NORMALIZE_MAX_SCALE) {
-      shrinkScene()
-    }
-    while (world.scale.x < NORMALIZE_MIN_SCALE) {
-      growScene()
-    }
-
-    if (adjusted) {
-      redrawSelection()
-      if (touchPointers.size >= 2) {
-        resetTouchGestureReference()
-      }
-      lastWorldScale = world.scale.x
-      refreshImageLODs()
-      syncWorldTransform()
-    }
-  }
-
   const resetTouchGestureReference = () => {
     const pair = getFirstTwoTouchPoints()
     if (!pair) {
@@ -1002,7 +985,7 @@ function configureScene(
     }
     const distance = Math.hypot(b.x - a.x, b.y - a.y)
     touchGesture = {
-      initialScale: world.scale.x,
+      initialScale: getSceneScale(),
       initialDistance: Math.max(distance, 1),
       initialMidpointWorld: screenToWorld(midpoint, currentWorldTransform()),
     }
@@ -1024,14 +1007,15 @@ function configureScene(
       MIN_ZOOM,
       MAX_ZOOM,
     )
-    world.scale.set(targetScale)
-    world.position.set(
-      midpoint.x - touchGesture.initialMidpointWorld.x * targetScale,
-      midpoint.y - touchGesture.initialMidpointWorld.y * targetScale,
-    )
-    normalizeWorldScale()
+    const relativeScale = targetScale / getSceneScale()
+    camera.multiplySceneScale(relativeScale)
+    camera.setScenePosition({
+      x: midpoint.x - touchGesture.initialMidpointWorld.x * targetScale,
+      y: midpoint.y - touchGesture.initialMidpointWorld.y * targetScale,
+    })
+    applyCameraTransform()
     syncWorldTransform()
-    lastWorldScale = world.scale.x
+    lastSceneScale = getSceneScale()
     refreshImageLODs()
     redrawSelection()
 
@@ -1422,8 +1406,8 @@ function configureScene(
 
     switch (pointer.mode) {
       case 'panning': {
-        world.position.x += dx
-        world.position.y += dy
+        camera.translateScene({ x: dx, y: dy })
+        applyCameraTransform()
         syncWorldTransform()
         break
       }
@@ -1574,19 +1558,23 @@ function configureScene(
   const handleWheel = (event: WheelEvent) => {
     event.preventDefault()
     const zoomDelta = Math.exp(-event.deltaY * 0.0015)
-    const currentScale = world.scale.x
+    const transform = currentWorldTransform()
+    const currentScale = transform.scale
     const targetScale = clamp(currentScale * zoomDelta, MIN_ZOOM, MAX_ZOOM)
     const rect = view.getBoundingClientRect()
     const cursorX = event.clientX - rect.left
     const cursorY = event.clientY - rect.top
-    const worldCursorX = (cursorX - world.position.x) / currentScale
-    const worldCursorY = (cursorY - world.position.y) / currentScale
-
-    world.scale.set(targetScale)
-    world.position.set(cursorX - worldCursorX * targetScale, cursorY - worldCursorY * targetScale)
-    normalizeWorldScale()
+    const worldCursorX = (cursorX - transform.position.x) / currentScale
+    const worldCursorY = (cursorY - transform.position.y) / currentScale
+    const relativeScale = targetScale / currentScale
+    camera.multiplySceneScale(relativeScale)
+    camera.setScenePosition({
+      x: cursorX - worldCursorX * targetScale,
+      y: cursorY - worldCursorY * targetScale,
+    })
+    applyCameraTransform()
     syncWorldTransform()
-    lastWorldScale = world.scale.x
+    lastSceneScale = getSceneScale()
     refreshImageLODs()
     redrawSelection()
   }
@@ -1690,7 +1678,7 @@ function configureScene(
     window.removeEventListener('keyup', handleKeyUp)
     app.ticker.remove(ticker)
     unsubscribeStore()
-    grid.destroy()
+    gridLayer.destroy()
     marquee.destroy()
     overlay.destroy({
       children: true,
@@ -1720,7 +1708,7 @@ function hideImageSprite(visual: NodeVisual) {
     visual.tileContainer.visible = false
   }
   if (visual.text) {
-    visual.text.visible = false
+    visual.text.container.visible = false
   }
   if (visual.underline) {
     visual.underline.visible = false
@@ -1785,20 +1773,32 @@ function ensureUnderline(visual: NodeVisual) {
   return visual.underline
 }
 
-function renderNodeVisual(visual: NodeVisual, node: SceneNode, worldScale: number) {
+function renderNodeVisual(visual: NodeVisual, node: SceneNode, worldScale: number, camera: CameraNormalizer) {
   visual.node = node
-  visual.container.position.set(node.position.x, node.position.y)
+  const renderPosition = camera.sceneToRender(node.position)
+  visual.container.position.set(renderPosition.x, renderPosition.y)
   visual.container.rotation = node.rotation
 
-  const { width, height } = node.size
-  const halfWidth = width / 2
-  const halfHeight = height / 2
+  const sceneWidth = node.size.width
+  const sceneHeight = node.size.height
+  const renderWidth = camera.lengthToRender(sceneWidth)
+  const renderHeight = camera.lengthToRender(sceneHeight)
+  const halfWidth = renderWidth / 2
+  const halfHeight = renderHeight / 2
+  const renderSize: Size2D = { width: renderWidth, height: renderHeight }
 
   if (node.type === 'text' && node.text) {
     hideImageSprite(visual)
     visual.body.visible = false
     const textVisual = ensureVectorText(visual)
     const fillColor = hexColorToNumber(node.fill, DEFAULT_FILL_COLOR)
+    const strokeOptions =
+      node.stroke && node.stroke.width > 0
+        ? {
+            color: hexColorToNumber(node.stroke.color, DEFAULT_STROKE_COLOR),
+            width: node.stroke.width,
+          }
+        : null
     const fontRequest: FontStyleRequest = {
       fontFamily: node.text.fontFamily,
       fontWeight: node.text.fontWeight,
@@ -1816,9 +1816,9 @@ function renderNodeVisual(visual: NodeVisual, node: SceneNode, worldScale: numbe
       visual.fontDescriptor &&
       descriptorsEqual(visual.fontDescriptor, normalizedDescriptor)
     ) {
-      textVisual.update(textVisual.font, visual.textLayout, fillColor)
+      textVisual.update(textVisual.font, visual.textLayout, fillColor, strokeOptions)
       textVisual.container.visible = true
-      fitVectorTextVisual(visual)
+      fitVectorTextVisual(visual, renderSize)
       updateUnderlineVisual(visual)
       return
     }
@@ -1850,11 +1850,11 @@ function renderNodeVisual(visual: NodeVisual, node: SceneNode, worldScale: numbe
           align: node.text!.align,
         })
 
-        textVisual.update(font, layout, fillColor)
+        textVisual.update(font, layout, fillColor, strokeOptions)
         textVisual.container.visible = true
         visual.textLayout = layout
         visual.textSignature = signature
-        fitVectorTextVisual(visual)
+        fitVectorTextVisual(visual, renderSize)
         updateUnderlineVisual(visual)
       })
       .catch((error) => {
@@ -1877,8 +1877,8 @@ function renderNodeVisual(visual: NodeVisual, node: SceneNode, worldScale: numbe
     visual.body.visible = false
     const sprite = ensureImageSprite(visual)
     sprite.visible = true
-    sprite.width = width
-    sprite.height = height
+    sprite.width = renderWidth
+    sprite.height = renderHeight
     const cached = assetTextureCache.get(node.image.assetId)
     if (cached) {
       sprite.texture = cached
@@ -1894,7 +1894,7 @@ function renderNodeVisual(visual: NodeVisual, node: SceneNode, worldScale: numbe
           console.error('[stage] failed to load asset texture', node.image?.assetId, error)
         })
     }
-    renderImageTiles(visual, node, worldScale)
+    renderImageTiles(visual, node, worldScale, camera)
     return
   }
 
@@ -1910,21 +1910,23 @@ function renderNodeVisual(visual: NodeVisual, node: SceneNode, worldScale: numbe
   const shape = node.type === 'shape' ? node.shape : undefined
 
   if (shape?.kind === 'rectangle') {
-    const radius = Math.min(shape.cornerRadius ?? 0, Math.min(width, height) / 2)
-    visual.body.roundRect(-halfWidth, -halfHeight, width, height, radius)
+    const maxRadius = Math.min(renderWidth, renderHeight) / 2
+    const requestedRadius = camera.lengthToRender(shape.cornerRadius ?? 0)
+    const radius = Math.min(requestedRadius, maxRadius)
+    visual.body.roundRect(-halfWidth, -halfHeight, renderWidth, renderHeight, radius)
   } else if (shape?.kind === 'ellipse') {
     visual.body.ellipse(0, 0, halfWidth, halfHeight)
   } else if (shape?.kind === 'polygon') {
     const points = shape.points.length >= 3 ? shape.points : DEFAULT_POLYGON_POINTS
     const first = points[0]
-    visual.body.moveTo(first.x * width, first.y * height)
+    visual.body.moveTo(first.x * renderWidth, first.y * renderHeight)
     for (let idx = 1; idx < points.length; idx += 1) {
       const pt = points[idx]
-      visual.body.lineTo(pt.x * width, pt.y * height)
+      visual.body.lineTo(pt.x * renderWidth, pt.y * renderHeight)
     }
     visual.body.closePath()
   } else {
-    visual.body.roundRect(-halfWidth, -halfHeight, width, height, 12)
+    visual.body.roundRect(-halfWidth, -halfHeight, renderWidth, renderHeight, camera.lengthToRender(12))
   }
 
   if (node.fill !== null) {
@@ -1932,11 +1934,14 @@ function renderNodeVisual(visual: NodeVisual, node: SceneNode, worldScale: numbe
   }
 
   if (strokeWidth > 0) {
-    visual.body.stroke({ color: strokeColor, width: strokeWidth, alpha: 1 })
+    const renderStrokeWidth = camera.lengthToRender(strokeWidth)
+    if (renderStrokeWidth > 0) {
+      visual.body.stroke({ color: strokeColor, width: renderStrokeWidth, alpha: 1 })
+    }
   }
 }
 
-function renderImageTiles(visual: NodeVisual, node: SceneNode, worldScale: number) {
+function renderImageTiles(visual: NodeVisual, node: SceneNode, worldScale: number, camera: CameraNormalizer) {
   if (!node.image) return
   const intrinsicWidth = Math.max(1, node.image.intrinsicSize.width)
   const intrinsicHeight = Math.max(1, node.image.intrinsicSize.height)
@@ -1996,9 +2001,9 @@ function renderImageTiles(visual: NodeVisual, node: SceneNode, worldScale: numbe
       const offsetX = -node.size.width / 2 + x * tileSize * levelWorldScaleX + displayWidth / 2
       const offsetY = -node.size.height / 2 + y * tileSize * levelWorldScaleY + displayHeight / 2
 
-      sprite.position.set(offsetX, offsetY)
-      sprite.width = displayWidth
-      sprite.height = displayHeight
+      sprite.position.set(camera.lengthToRender(offsetX), camera.lengthToRender(offsetY))
+      sprite.width = camera.lengthToRender(displayWidth)
+      sprite.height = camera.lengthToRender(displayHeight)
 
       const cacheKey = `${node.image.assetId}:${targetLevel}:${x}:${y}`
       const cached = tileTextureCache.get(cacheKey)
@@ -2028,7 +2033,12 @@ function renderImageTiles(visual: NodeVisual, node: SceneNode, worldScale: numbe
   })
 }
 
-function drawSelectionOverlay(visual: NodeVisual, worldScale: number, isSelected: boolean) {
+function drawSelectionOverlay(
+  visual: NodeVisual,
+  worldScale: number,
+  isSelected: boolean,
+  camera: CameraNormalizer,
+) {
   const overlay = visual.selection
   overlay.clear()
   if (!isSelected) {
@@ -2038,11 +2048,17 @@ function drawSelectionOverlay(visual: NodeVisual, worldScale: number, isSelected
 
   overlay.visible = true
   const { width, height } = visual.node.size
-  const halfWidth = width / 2
-  const halfHeight = height / 2
-  const sizing = calculateSelectionHandleSizing(worldScale)
+  const halfWidth = camera.lengthToRender(width / 2)
+  const halfHeight = camera.lengthToRender(height / 2)
+  const sizingScene = calculateSelectionHandleSizing(worldScale)
+  const sizing = {
+    strokeWidth: camera.lengthToRender(sizingScene.strokeWidth),
+    cornerRadius: camera.lengthToRender(sizingScene.cornerRadius),
+    edgeRadius: camera.lengthToRender(sizingScene.edgeRadius),
+    rotationRadius: camera.lengthToRender(sizingScene.rotationRadius),
+  }
 
-  overlay.rect(-halfWidth, -halfHeight, width, height)
+  overlay.rect(-halfWidth, -halfHeight, halfWidth * 2, halfHeight * 2)
   overlay.stroke({ color: SELECTION_COLOR, width: sizing.strokeWidth, alpha: 0.95 })
 
   const corners: Vec2[] = [
@@ -2057,7 +2073,7 @@ function drawSelectionOverlay(visual: NodeVisual, worldScale: number, isSelected
   })
 }
 
-function fitVectorTextVisual(visual: NodeVisual) {
+function fitVectorTextVisual(visual: NodeVisual, renderSize: Size2D) {
   const node = visual.node
   if (node.type !== 'text' || !node.text || !visual.text || !visual.textLayout) {
     return
@@ -2073,8 +2089,8 @@ function fitVectorTextVisual(visual: NodeVisual) {
     return
   }
 
-  const widthScale = node.size.width > 0 ? node.size.width / bounds.width : 1
-  const heightScale = node.size.height > 0 ? node.size.height / bounds.height : 1
+  const widthScale = renderSize.width > 0 ? renderSize.width / bounds.width : 1
+  const heightScale = renderSize.height > 0 ? renderSize.height / bounds.height : 1
   const fitScale = Math.min(widthScale, heightScale, 1) * TEXT_FIT_EPSILON
   const scale = Number.isFinite(fitScale) && fitScale > 0 ? fitScale : 1
 

@@ -182,24 +182,51 @@ function buildGlyphGeometry(glyph, unitsPerEm) {
     return {
       positions: [],
       indices: [],
+      contours: [],
     }
   }
 
   const graphicsPath = new GraphicsPath()
   graphicsPath.checkForHoles = true
+  const contours = []
+  let currentContour = null
+
+  const beginContour = () => {
+    currentContour = []
+    contours.push(currentContour)
+  }
+
+  const ensureContour = () => {
+    if (!currentContour) {
+      beginContour()
+    }
+  }
 
   for (const command of path.commands) {
     switch (command.type) {
       case 'M':
+        beginContour()
         graphicsPath.moveTo(command.x, -command.y)
+        currentContour.push({ type: 'moveTo', x: command.x, y: -command.y })
         break
       case 'L':
+        ensureContour()
         graphicsPath.lineTo(command.x, -command.y)
+        currentContour.push({ type: 'lineTo', x: command.x, y: -command.y })
         break
       case 'Q':
+        ensureContour()
         graphicsPath.quadraticCurveTo(command.x1, -command.y1, command.x, -command.y, QUALITY)
+        currentContour.push({
+          type: 'quadraticCurveTo',
+          x1: command.x1,
+          y1: -command.y1,
+          x: command.x,
+          y: -command.y,
+        })
         break
       case 'C':
+        ensureContour()
         graphicsPath.bezierCurveTo(
           command.x1,
           -command.y1,
@@ -209,9 +236,22 @@ function buildGlyphGeometry(glyph, unitsPerEm) {
           -command.y,
           QUALITY,
         )
+        currentContour.push({
+          type: 'bezierCurveTo',
+          x1: command.x1,
+          y1: -command.y1,
+          x2: command.x2,
+          y2: -command.y2,
+          x: command.x,
+          y: -command.y,
+        })
         break
       case 'Z':
         graphicsPath.closePath()
+        if (currentContour) {
+          currentContour.push({ type: 'closePath' })
+          currentContour = null
+        }
         break
       default:
         break
@@ -228,6 +268,7 @@ function buildGlyphGeometry(glyph, unitsPerEm) {
   return {
     positions,
     indices,
+    contours,
   }
 }
 
