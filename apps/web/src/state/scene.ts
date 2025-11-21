@@ -7,7 +7,7 @@ import {
 } from '../tiles/tileLevels'
 import { normalizeFontRequest } from '../canvas/text/fontUtils'
 import { getLoadedVectorFont, resolveVectorFontByDescriptor } from '../canvas/text/vectorFont'
-import { layoutVectorText } from '../canvas/text/vectorTextLayout'
+import { layoutVectorText, type LayoutBounds } from '../canvas/text/vectorTextLayout'
 
 export type SceneNodeType = 'shape' | 'image' | 'text'
 export type ShapeType = 'rectangle' | 'ellipse' | 'polygon'
@@ -75,6 +75,7 @@ export interface TextDefinition {
   align: 'left' | 'center' | 'right'
   fontStyle: 'normal' | 'italic'
   underline: boolean
+  layoutBounds?: LayoutBounds
 }
 
 export interface AABB {
@@ -94,13 +95,27 @@ export interface Viewport {
   height: number
 }
 
+export interface SceneDocumentV1 {
+  version: 1
+  nodes: SceneNode[]
+  world: WorldTransform
+  backgroundColor: string
+  showGrid: boolean
+  showOrigin: boolean
+}
+
+export type SceneDocument = SceneDocumentV1
+
+const SCENE_DOCUMENT_VERSION: SceneDocument['version'] = 1
+const DEFAULT_WORLD_TRANSFORM: WorldTransform = { position: { x: 0, y: 0 }, scale: 1 }
+
 const DEFAULT_RECT_SIZE: Size2D = { width: 160, height: 120 }
 const HISTORY_LIMIT = 200
 const MIN_NODE_SIZE = 2
 const DEFAULT_FILL = '#38bdf8'
 const DEFAULT_STROKE = '#0ea5e9'
 const DEFAULT_TILE_SIZE = 256
-const DEFAULT_POLYGON_POINTS: Vec2[] = [
+export const DEFAULT_POLYGON_POINTS: Vec2[] = [
   { x: 0, y: -0.5 },
   { x: 0.5, y: 0.5 },
   { x: -0.5, y: 0.5 },
@@ -114,6 +129,7 @@ export const DEFAULT_TEXT_CONTENT = 'Text'
 const DEFAULT_FONT_STYLE: TextDefinition['fontStyle'] = 'normal'
 const TEXT_MEASURE_CANVAS = typeof document !== 'undefined' ? document.createElement('canvas') : null
 const TEXT_MEASURE_CTX = TEXT_MEASURE_CANVAS ? TEXT_MEASURE_CANVAS.getContext('2d') : null
+const MIN_TEXT_RENDER_SIZE = 1e-6
 
 const measureTextSize = (text: TextDefinition): Size2D => {
   const descriptor = normalizeFontRequest({
@@ -132,13 +148,13 @@ const measureTextSize = (text: TextDefinition): Size2D => {
       lineHeight: text.lineHeight,
       align: text.align,
     })
+    text.layoutBounds = layout.bounds
     return {
-      width: Math.max(32, layout.bounds.width),
-      height: Math.max(32, layout.bounds.height),
+      width: Math.max(MIN_TEXT_RENDER_SIZE, layout.bounds.width),
+      height: Math.max(MIN_TEXT_RENDER_SIZE, layout.bounds.height),
     }
   }
 
-  // Trigger async load for future measurements.
   resolveVectorFontByDescriptor(descriptor).catch(() => {})
 
   const lines = text.content.split(/\r?\n/)
@@ -146,18 +162,60 @@ const measureTextSize = (text: TextDefinition): Size2D => {
     TEXT_MEASURE_CTX.font = `${text.fontStyle} ${text.fontWeight} ${text.fontSize}px ${text.fontFamily}`
     const widths = lines.map((line) => TEXT_MEASURE_CTX.measureText(line || ' ').width)
     const maxWidth = widths.length ? Math.max(...widths) : 0
-    const height = Math.max(text.fontSize, lines.length * text.fontSize * text.lineHeight)
+    const lineAdvance = Math.max(text.fontSize * text.lineHeight, text.fontSize)
+    let minY = Number.POSITIVE_INFINITY
+    let maxY = Number.NEGATIVE_INFINITY
+    lines.forEach((line, index) => {
+      const baseline = index * lineAdvance
+      const metrics = TEXT_MEASURE_CTX.measureText(line || ' ')
+      const ascent = Number.isFinite(metrics.actualBoundingBoxAscent)
+        ? metrics.actualBoundingBoxAscent
+        : text.fontSize * 0.8
+      const descent = Number.isFinite(metrics.actualBoundingBoxDescent)
+        ? metrics.actualBoundingBoxDescent
+        : text.fontSize * 0.2
+      const top = baseline - ascent
+      const bottom = baseline + descent
+      minY = Math.min(minY, top)
+      maxY = Math.max(maxY, bottom)
+    })
+    if (!Number.isFinite(minY) || !Number.isFinite(maxY)) {
+      minY = -lineAdvance / 2
+      maxY = lineAdvance / 2
+    }
+    const bounds: LayoutBounds = {
+      minX: -maxWidth / 2,
+      maxX: maxWidth / 2,
+      minY,
+      maxY,
+      width: Math.max(0, maxWidth),
+      height: Math.max(0, maxY - minY),
+    }
+    text.layoutBounds = bounds
     return {
-      width: Math.max(32, maxWidth),
-      height: Math.max(32, height),
+      width: Math.max(MIN_TEXT_RENDER_SIZE, bounds.width),
+      height: Math.max(MIN_TEXT_RENDER_SIZE, bounds.height),
     }
   }
-  const fallbackWidth = Math.max(
-    32,
-    lines.reduce((max, line) => Math.max(max, line.length * text.fontSize * 0.6), 0),
-  )
-  const fallbackHeight = Math.max(text.fontSize, lines.length * text.fontSize * text.lineHeight)
-  return { width: fallbackWidth, height: fallbackHeight }
+  const fallbackWidthValue = lines.reduce((max, line) => Math.max(max, line.length * text.fontSize * 0.6), 0)
+  const lineAdvance = Math.max(text.fontSize * text.lineHeight, text.fontSize)
+  const fallbackHeightValue = lineAdvance * Math.max(lines.length, 1)
+  const fallbackWidth = Math.max(MIN_TEXT_RENDER_SIZE, fallbackWidthValue)
+  const fallbackHeight = Math.max(MIN_TEXT_RENDER_SIZE, fallbackHeightValue)
+  const halfWidth = fallbackWidth / 2
+  const halfHeight = fallbackHeight / 2
+  text.layoutBounds = {
+    minX: -halfWidth,
+    maxX: halfWidth,
+    minY: -halfHeight,
+    maxY: halfHeight,
+    width: fallbackWidth,
+    height: fallbackHeight,
+  }
+  return {
+    width: fallbackWidth,
+    height: fallbackHeight,
+  }
 }
 
 interface SceneSnapshot {
@@ -172,7 +230,7 @@ interface HistoryState {
   recording: boolean
 }
 
-interface SceneState {
+export interface SceneState {
   nodes: SceneNode[]
   selectedIds: string[]
   lastSelectedId: string | null
@@ -181,6 +239,11 @@ interface SceneState {
   showGrid: boolean
   showOrigin: boolean
   backgroundColor: string
+  marquee: {
+    active: boolean
+    start: Vec2 | null
+    end: Vec2 | null
+  }
   createRectangleNode: (overrides?: Partial<Omit<SceneNode, 'type'>>) => SceneNode
   createShapeNode: (shape: ShapeDefinition, overrides?: Partial<Omit<SceneNode, 'type' | 'shape'>>) => SceneNode
   createImageNode: (
@@ -225,9 +288,16 @@ interface SceneState {
   undo: () => void
   redo: () => void
   history: HistoryState
+  viewOnly: boolean
   setShowGrid: (visible: boolean) => void
   setShowOrigin: (visible: boolean) => void
   setBackgroundColor: (color: string) => void
+  setViewOnly: (viewOnly: boolean) => void
+  startMarquee: (start: Vec2) => void
+  updateMarquee: (point: Vec2) => void
+  endMarquee: () => void
+  loadSceneDocument: (document: SceneDocument | null | undefined) => void
+  toSceneDocument: () => SceneDocument
 }
 
 const unique = (values: string[]) => {
@@ -238,6 +308,15 @@ const unique = (values: string[]) => {
     return true
   })
 }
+
+export const getEffectiveScaleFromWorld = (world: WorldTransform): number => world.scale
+
+const getEffectiveWorldScale = (state: SceneState): number => getEffectiveScaleFromWorld(state.world)
+
+export const getWorldScenePosition = (world: WorldTransform): Vec2 => ({
+  x: world.position.x,
+  y: world.position.y,
+})
 
 const clampSelectionToNodes = (ids: string[], nodes: SceneNode[]) => {
   const existing = new Set(nodes.map((node) => node.id))
@@ -346,13 +425,49 @@ const pushSnapshot = (history: HistoryState, snapshot: SceneSnapshot, recording?
   }
 }
 
+const sanitizeWorldTransform = (world?: WorldTransform | null): WorldTransform => {
+  const safeScale = Number.isFinite(world?.scale) ? world!.scale : DEFAULT_WORLD_TRANSFORM.scale
+  const position = world?.position ?? DEFAULT_WORLD_TRANSFORM.position
+  return {
+    position: {
+      x: Number.isFinite(position?.x) ? position!.x : DEFAULT_WORLD_TRANSFORM.position.x,
+      y: Number.isFinite(position?.y) ? position!.y : DEFAULT_WORLD_TRANSFORM.position.y,
+    },
+    scale: safeScale,
+  }
+}
+
+const normalizeSceneDocument = (document?: SceneDocument | null): SceneDocument => {
+  const backgroundColor =
+    typeof document?.backgroundColor === 'string' && document.backgroundColor.length > 0
+      ? document.backgroundColor
+      : '#020617'
+  return {
+    version: SCENE_DOCUMENT_VERSION,
+    nodes: document?.nodes ? cloneNodes(document.nodes) : [],
+    world: cloneWorld(sanitizeWorldTransform(document?.world ?? DEFAULT_WORLD_TRANSFORM)),
+    backgroundColor,
+    showGrid: document?.showGrid ?? true,
+    showOrigin: document?.showOrigin ?? true,
+  }
+}
+
+const createSceneDocumentFromState = (state: SceneState): SceneDocument => ({
+  version: SCENE_DOCUMENT_VERSION,
+  nodes: cloneNodes(state.nodes),
+  world: cloneWorld(state.world),
+  backgroundColor: state.backgroundColor,
+  showGrid: state.showGrid,
+  showOrigin: state.showOrigin,
+})
+
 export const useSceneStore = create<SceneState>((set, get) => ({
   nodes: [],
   selectedIds: [],
   lastSelectedId: null,
   world: {
-    position: { x: 0, y: 0 },
-    scale: 1,
+    ...DEFAULT_WORLD_TRANSFORM,
+    position: { ...DEFAULT_WORLD_TRANSFORM.position },
   },
   viewport: {
     width: 0,
@@ -363,10 +478,16 @@ export const useSceneStore = create<SceneState>((set, get) => ({
     future: [],
     recording: false,
   },
+  viewOnly: false,
   showGrid: true,
   showOrigin: true,
   backgroundColor: '#020617',
-  createRectangleNode: (overrides = {}) => {
+  marquee: {
+    active: false,
+    start: null,
+    end: null,
+  },
+createRectangleNode: (overrides = {}) => {
     const state = get()
     const center = overrides.position ?? state.getWorldCenter()
     const size = overrides.size ?? DEFAULT_RECT_SIZE
@@ -389,8 +510,8 @@ export const useSceneStore = create<SceneState>((set, get) => ({
     const id = overrides.id ?? crypto.randomUUID()
     const state = get()
     const center = overrides.position ?? state.getWorldCenter()
-    const scale = state.world.scale || 1
-    const factor = 1 / scale
+    const scale = getEffectiveWorldScale(state)
+    const factor = scale !== 0 ? 1 / scale : 1
     const size = overrides.size ?? { width: DEFAULT_RECT_SIZE.width * factor, height: DEFAULT_RECT_SIZE.height * factor }
     const shapeDef = sanitizeShapeDefinition(shape) ?? { kind: 'rectangle', cornerRadius: 0 }
     const strokeOverrides = overrides.stroke
@@ -430,8 +551,8 @@ export const useSceneStore = create<SceneState>((set, get) => ({
     const id = overrides.id ?? crypto.randomUUID()
     const state = get()
     const center = overrides.position ?? state.getWorldCenter()
-    const scale = state.world.scale || 1
-    const factor = 1 / scale
+    const scale = getEffectiveWorldScale(state)
+    const factor = scale !== 0 ? 1 / scale : 1
     const intrinsic = {
       width: image.intrinsicSize?.width ?? DEFAULT_RECT_SIZE.width,
       height: image.intrinsicSize?.height ?? DEFAULT_RECT_SIZE.height,
@@ -493,10 +614,12 @@ export const useSceneStore = create<SceneState>((set, get) => ({
     const id = overrides.id ?? crypto.randomUUID()
     const state = get()
     const center = overrides.position ?? state.getWorldCenter()
+    const scale = getEffectiveWorldScale(state)
+    const factor = scale !== 0 ? 1 / scale : 1
     const textDef: TextDefinition = {
       content: overrides.text?.content ?? DEFAULT_TEXT_CONTENT,
       fontFamily: overrides.text?.fontFamily ?? DEFAULT_FONT_FAMILY,
-      fontSize: overrides.text?.fontSize ?? DEFAULT_FONT_SIZE,
+      fontSize: (overrides.text?.fontSize ?? DEFAULT_FONT_SIZE) * factor,
       fontWeight: overrides.text?.fontWeight ?? DEFAULT_FONT_WEIGHT,
       lineHeight: overrides.text?.lineHeight ?? DEFAULT_LINE_HEIGHT,
       align: overrides.text?.align ?? DEFAULT_TEXT_ALIGN,
@@ -513,7 +636,12 @@ export const useSceneStore = create<SceneState>((set, get) => ({
       rotation: overrides.rotation ?? 0,
       text: textDef,
       fill: overrides.fill ?? DEFAULT_FILL,
-      stroke: overrides.stroke,
+      stroke: overrides.stroke
+        ? {
+            color: overrides.stroke.color ?? DEFAULT_STROKE,
+            width: (overrides.stroke.width ?? 2) * factor,
+          }
+        : overrides.stroke,
       locked: overrides.locked ?? false,
       aspectRatioLocked: overrides.aspectRatioLocked ?? false,
     }
@@ -534,6 +662,7 @@ export const useSceneStore = create<SceneState>((set, get) => ({
   deleteNodes: (ids) => {
     if (ids.length === 0) return
     set((prev) => {
+      if (prev.viewOnly) return prev
       const toDelete = new Set(ids)
       const nodes = prev.nodes.filter((node) => !toDelete.has(node.id))
       const selectedIds = prev.selectedIds.filter((id) => !toDelete.has(id))
@@ -552,6 +681,7 @@ export const useSceneStore = create<SceneState>((set, get) => ({
   },
   renameNode: (id, name) => {
     set((prev) => {
+      if (prev.viewOnly) return prev
       const trimmed = name.trim()
       if (!trimmed) return prev
       const hasNode = prev.nodes.some((node) => node.id === id)
@@ -620,6 +750,7 @@ export const useSceneStore = create<SceneState>((set, get) => ({
     })),
   startTransformSession: () =>
     set((prev) => {
+      if (prev.viewOnly) return prev
       if (prev.selectedIds.length === 0) return prev
       if (prev.history.recording) return prev
       const history = pushSnapshot(prev.history, createSnapshot(prev), true)
@@ -627,6 +758,7 @@ export const useSceneStore = create<SceneState>((set, get) => ({
     }),
   commitTransformSession: () =>
     set((prev) => {
+      if (prev.viewOnly) return prev
       if (!prev.history.recording) return prev
       return {
         history: {
@@ -638,6 +770,7 @@ export const useSceneStore = create<SceneState>((set, get) => ({
     }),
   translateSelected: (delta, options) =>
     set((prev) => {
+      if (prev.viewOnly) return prev
       if (prev.selectedIds.length === 0) return prev
       if (delta.x === 0 && delta.y === 0) return prev
       const selectedSet = new Set(prev.selectedIds)
@@ -660,6 +793,7 @@ export const useSceneStore = create<SceneState>((set, get) => ({
     }),
   scaleSelected: (center, scaleX, scaleY, options) =>
     set((prev) => {
+      if (prev.viewOnly) return prev
       if (prev.selectedIds.length === 0) return prev
       if (!Number.isFinite(scaleX) || !Number.isFinite(scaleY)) return prev
       const selectedSet = new Set(prev.selectedIds)
@@ -669,8 +803,9 @@ export const useSceneStore = create<SceneState>((set, get) => ({
         if (!selectedSet.has(node.id)) return node
         const offsetX = node.position.x - center.x
         const offsetY = node.position.y - center.y
-        const minScaleX = MIN_NODE_SIZE / Math.max(node.size.width, Number.EPSILON)
-        const minScaleY = MIN_NODE_SIZE / Math.max(node.size.height, Number.EPSILON)
+        const isTextNode = node.type === 'text'
+        const minScaleX = isTextNode ? 0 : MIN_NODE_SIZE / Math.max(node.size.width, Number.EPSILON)
+        const minScaleY = isTextNode ? 0 : MIN_NODE_SIZE / Math.max(node.size.height, Number.EPSILON)
 
         let effectiveScaleX = Math.max(safeScaleX, minScaleX)
         let effectiveScaleY = Math.max(safeScaleY, minScaleY)
@@ -689,8 +824,10 @@ export const useSceneStore = create<SceneState>((set, get) => ({
         const shapeScale = Math.sqrt(areaScale)
 
         if (node.type === 'text' && node.text) {
-          const uniformScale = Math.max(effectiveScaleX, effectiveScaleY)
-          const nextFontSize = Math.max(4, node.text.fontSize * uniformScale)
+          const uniformScale = node.aspectRatioLocked
+            ? effectiveScaleX
+            : Math.max(effectiveScaleX, effectiveScaleY)
+          const nextFontSize = Math.max(1e-6, node.text.fontSize * uniformScale)
           const text = { ...node.text, fontSize: nextFontSize }
           const size = measureTextSize(text)
           return {
@@ -722,6 +859,7 @@ export const useSceneStore = create<SceneState>((set, get) => ({
     }),
   rotateSelected: (center, deltaRadians, options) =>
     set((prev) => {
+      if (prev.viewOnly) return prev
       if (prev.selectedIds.length === 0) return prev
       if (!Number.isFinite(deltaRadians) || deltaRadians === 0) return prev
       const selectedSet = new Set(prev.selectedIds)
@@ -751,6 +889,7 @@ export const useSceneStore = create<SceneState>((set, get) => ({
     }),
   updateSelectedFill: (color) =>
     set((prev) => {
+      if (prev.viewOnly) return prev
       if (prev.selectedIds.length === 0) return prev
       const selectedSet = new Set(prev.selectedIds)
       const nodes = prev.nodes.map((node) => {
@@ -769,6 +908,7 @@ export const useSceneStore = create<SceneState>((set, get) => ({
     }),
   updateSelectedStroke: (stroke) =>
     set((prev) => {
+      if (prev.viewOnly) return prev
       if (prev.selectedIds.length === 0) return prev
       const selectedSet = new Set(prev.selectedIds)
       const nodes = prev.nodes.map((node) => {
@@ -792,6 +932,7 @@ export const useSceneStore = create<SceneState>((set, get) => ({
     }),
   updateSelectedCornerRadius: (cornerRadius) =>
     set((prev) => {
+      if (prev.viewOnly) return prev
       if (prev.selectedIds.length === 0) return prev
       const radius = Math.max(0, cornerRadius)
       const selectedSet = new Set(prev.selectedIds)
@@ -815,6 +956,7 @@ export const useSceneStore = create<SceneState>((set, get) => ({
     }),
   setSelectedAspectRatioLocked: (locked) =>
     set((prev) => {
+      if (prev.viewOnly) return prev
       if (prev.selectedIds.length === 0) return prev
       const selectedSet = new Set(prev.selectedIds)
       const nodes = prev.nodes.map((node) =>
@@ -828,6 +970,7 @@ export const useSceneStore = create<SceneState>((set, get) => ({
     }),
   updateSelectedTextContent: (content) =>
     set((prev) => {
+      if (prev.viewOnly) return prev
       if (prev.selectedIds.length === 0) return prev
       const selectedSet = new Set(prev.selectedIds)
       let changed = false
@@ -850,6 +993,7 @@ export const useSceneStore = create<SceneState>((set, get) => ({
     }),
   setSelectedFontFamily: (fontFamily) =>
     set((prev) => {
+      if (prev.viewOnly) return prev
       if (!fontFamily || prev.selectedIds.length === 0) return prev
       const selectedSet = new Set(prev.selectedIds)
       let changed = false
@@ -867,6 +1011,7 @@ export const useSceneStore = create<SceneState>((set, get) => ({
     }),
   setSelectedFontSize: (fontSize) =>
     set((prev) => {
+      if (prev.viewOnly) return prev
       if (!Number.isFinite(fontSize) || fontSize <= 0 || prev.selectedIds.length === 0) return prev
       const selectedSet = new Set(prev.selectedIds)
       let changed = false
@@ -884,6 +1029,7 @@ export const useSceneStore = create<SceneState>((set, get) => ({
     }),
   setSelectedTextAlign: (align) =>
     set((prev) => {
+      if (prev.viewOnly) return prev
       if (!align || prev.selectedIds.length === 0) return prev
       const selectedSet = new Set(prev.selectedIds)
       let changed = false
@@ -902,6 +1048,7 @@ export const useSceneStore = create<SceneState>((set, get) => ({
     }),
   setSelectedFontWeight: (fontWeight) =>
     set((prev) => {
+      if (prev.viewOnly) return prev
       if (!Number.isFinite(fontWeight) || prev.selectedIds.length === 0) return prev
       const selectedSet = new Set(prev.selectedIds)
       let changed = false
@@ -919,6 +1066,7 @@ export const useSceneStore = create<SceneState>((set, get) => ({
     }),
   setSelectedFontStyle: (style) =>
     set((prev) => {
+      if (prev.viewOnly) return prev
       if (prev.selectedIds.length === 0) return prev
       const selectedSet = new Set(prev.selectedIds)
       let changed = false
@@ -936,6 +1084,7 @@ export const useSceneStore = create<SceneState>((set, get) => ({
     }),
   setSelectedUnderline: (underline) =>
     set((prev) => {
+      if (prev.viewOnly) return prev
       if (prev.selectedIds.length === 0) return prev
       const selectedSet = new Set(prev.selectedIds)
       let changed = false
@@ -951,6 +1100,7 @@ export const useSceneStore = create<SceneState>((set, get) => ({
     }),
   setSelectedLineHeight: (lineHeight) =>
     set((prev) => {
+      if (prev.viewOnly) return prev
       if (!Number.isFinite(lineHeight) || lineHeight <= 0 || prev.selectedIds.length === 0) return prev
       const selectedSet = new Set(prev.selectedIds)
       let changed = false
@@ -968,6 +1118,7 @@ export const useSceneStore = create<SceneState>((set, get) => ({
     }),
   lockSelected: () =>
     set((prev) => {
+      if (prev.viewOnly) return prev
       if (prev.selectedIds.length === 0) return prev
       const history = !prev.history.recording ? pushSnapshot(prev.history, createSnapshot(prev)) : prev.history
       const selectedSet = new Set(prev.selectedIds)
@@ -988,6 +1139,7 @@ export const useSceneStore = create<SceneState>((set, get) => ({
     }),
   unlockNodes: (ids) =>
     set((prev) => {
+      if (prev.viewOnly) return prev
       if (ids.length === 0) return prev
       const unlockSet = new Set(ids)
       const nodes = prev.nodes.map((node) =>
@@ -1006,6 +1158,7 @@ export const useSceneStore = create<SceneState>((set, get) => ({
     }),
   bringSelectedForward: () =>
     set((prev) => {
+      if (prev.viewOnly) return prev
       if (prev.selectedIds.length === 0) return prev
       const selectedSet = new Set(prev.selectedIds)
       const nodes = [...prev.nodes]
@@ -1022,6 +1175,7 @@ export const useSceneStore = create<SceneState>((set, get) => ({
     }),
   sendSelectedBackward: () =>
     set((prev) => {
+      if (prev.viewOnly) return prev
       if (prev.selectedIds.length === 0) return prev
       const selectedSet = new Set(prev.selectedIds)
       const nodes = [...prev.nodes]
@@ -1038,6 +1192,7 @@ export const useSceneStore = create<SceneState>((set, get) => ({
     }),
   bringSelectedToFront: () =>
     set((prev) => {
+      if (prev.viewOnly) return prev
       if (prev.selectedIds.length === 0) return prev
       const selectedSet = new Set(prev.selectedIds)
       const selectedNodes = prev.nodes.filter((node) => selectedSet.has(node.id))
@@ -1048,6 +1203,7 @@ export const useSceneStore = create<SceneState>((set, get) => ({
     }),
   sendSelectedToBack: () =>
     set((prev) => {
+      if (prev.viewOnly) return prev
       if (prev.selectedIds.length === 0) return prev
       const selectedSet = new Set(prev.selectedIds)
       const selectedNodes = prev.nodes.filter((node) => selectedSet.has(node.id))
@@ -1058,6 +1214,7 @@ export const useSceneStore = create<SceneState>((set, get) => ({
     }),
   undo: () =>
     set((prev) => {
+      if (prev.viewOnly) return prev
       if (prev.history.past.length === 0) return prev
       const snapshot = prev.history.past[prev.history.past.length - 1]
       const newPast = prev.history.past.slice(0, -1)
@@ -1080,6 +1237,7 @@ export const useSceneStore = create<SceneState>((set, get) => ({
     }),
   redo: () =>
     set((prev) => {
+      if (prev.viewOnly) return prev
       if (prev.history.future.length === 0) return prev
       const snapshot = prev.history.future[prev.history.future.length - 1]
       const newFuture = prev.history.future.slice(0, -1)
@@ -1102,21 +1260,74 @@ export const useSceneStore = create<SceneState>((set, get) => ({
     }),
   setShowGrid: (visible) =>
     set((prev) => {
+      if (prev.viewOnly) return prev
       if (prev.showGrid === visible) return prev
       return { ...prev, showGrid: visible }
     }),
   setShowOrigin: (visible) =>
     set((prev) => {
+      if (prev.viewOnly) return prev
       if (prev.showOrigin === visible) return prev
       return { ...prev, showOrigin: visible }
     }),
   setBackgroundColor: (color) =>
     set((prev) => {
+      if (prev.viewOnly) return prev
       const trimmed = color?.trim()
       if (!trimmed) return prev
       if (prev.backgroundColor === trimmed) return prev
       return { ...prev, backgroundColor: trimmed }
     }),
+  setViewOnly: (viewOnly) =>
+    set((prev) => {
+      if (prev.viewOnly === viewOnly) return prev
+      return { ...prev, viewOnly }
+    }),
+  startMarquee: (start) =>
+    set(() => ({
+      marquee: {
+        active: true,
+        start: { ...start },
+        end: { ...start },
+      },
+    })),
+  updateMarquee: (point) =>
+    set((prev) => {
+      if (!prev.marquee.active || !prev.marquee.start) return prev
+      return {
+        marquee: {
+          active: true,
+          start: prev.marquee.start,
+          end: { ...point },
+        },
+      }
+    }),
+  endMarquee: () =>
+    set(() => ({
+      marquee: {
+        active: false,
+        start: null,
+        end: null,
+      },
+    })),
+  loadSceneDocument: (document) => {
+    const normalized = normalizeSceneDocument(document)
+    set(() => ({
+      nodes: normalized.nodes,
+      selectedIds: [],
+      lastSelectedId: null,
+      world: normalized.world,
+      backgroundColor: normalized.backgroundColor,
+      showGrid: normalized.showGrid,
+      showOrigin: normalized.showOrigin,
+      history: {
+        past: [],
+        future: [],
+        recording: false,
+      },
+    }))
+  },
+  toSceneDocument: () => createSceneDocumentFromState(get()),
   getWorldCenter: () => {
     const { viewport, world } = get()
     if (viewport.width === 0 || viewport.height === 0) {
@@ -1194,7 +1405,7 @@ export function intersectsAABB(a: AABB, b: AABB) {
 }
 
 export function screenToWorld(point: Vec2, transform: WorldTransform): Vec2 {
-  const scale = getSafeScale(transform.scale)
+  const scale = getSafeScale(getEffectiveScaleFromWorld(transform))
   return {
     x: (point.x - transform.position.x) / scale,
     y: (point.y - transform.position.y) / scale,
@@ -1202,7 +1413,7 @@ export function screenToWorld(point: Vec2, transform: WorldTransform): Vec2 {
 }
 
 export function worldToScreen(point: Vec2, transform: WorldTransform): Vec2 {
-  const scale = getSafeScale(transform.scale)
+  const scale = getSafeScale(getEffectiveScaleFromWorld(transform))
   return {
     x: point.x * scale + transform.position.x,
     y: point.y * scale + transform.position.y,

@@ -1,14 +1,54 @@
-import { MeshGeometry } from 'pixi.js'
-
-import {
-  descriptorKey,
-  extractPrimaryFamily,
-  normalizeFontRequest,
-  type FontStyleRequest,
-  type NormalizedFontDescriptor,
-} from './fontUtils'
+import { normalizeFontRequest, type FontStyleRequest, type NormalizedFontDescriptor } from './fontUtils'
 
 const MANIFEST_URL = '/vector-fonts/manifest.json'
+
+type GlyphCommand =
+  | { type: 'moveTo'; x: number; y: number }
+  | { type: 'lineTo'; x: number; y: number }
+  | { type: 'quadraticCurveTo'; x1: number; y1: number; x: number; y: number }
+  | { type: 'bezierCurveTo'; x1: number; y1: number; x2: number; y2: number; x: number; y: number }
+  | { type: 'closePath' }
+
+export interface VectorFontMetrics {
+  unitsPerEm: number
+  ascender: number
+  descender: number
+  lineGap: number
+  lineHeight: number
+  underlinePosition?: number
+  underlineThickness?: number
+  capHeight?: number
+  xHeight?: number
+}
+
+export interface VectorFontGlyph {
+  codePoint: number
+  unicode: number | null
+  advanceWidth: number
+  leftSideBearing: number
+  bounds: {
+    minX: number
+    maxX: number
+    minY: number
+    maxY: number
+  }
+  positions: Float32Array
+  indices: Uint32Array
+  uvs: Float32Array
+  contours: GlyphCommand[][]
+}
+
+export interface VectorFont {
+  descriptor: NormalizedFontDescriptor
+  metrics: VectorFontMetrics
+  glyphs: Map<number, VectorFontGlyph>
+  kerning: Map<number, Map<number, number>>
+  charset: Set<number>
+  quality: number
+  fallbackGlyph: VectorFontGlyph
+  getGlyph: (codePoint: number) => VectorFontGlyph
+  getKerning: (left: number, right: number) => number
+}
 
 interface ManifestEntry {
   family: string
@@ -16,6 +56,23 @@ interface ManifestEntry {
   italic: boolean
   style: string
   data: string
+}
+
+interface VectorFontAssetGlyph {
+  unicode: number | null
+  advanceWidth: number
+  leftSideBearing: number
+  bounds: {
+    minX: number
+    maxX: number
+    minY: number
+    maxY: number
+  }
+  geometry: {
+    positions: number[]
+    indices: number[]
+    contours?: GlyphCommand[][]
+  }
 }
 
 interface VectorFontAsset {
@@ -31,193 +88,107 @@ interface VectorFontAsset {
   quality?: number
 }
 
-interface VectorFontAssetGlyph {
-  unicode: number | null
-  advanceWidth: number
-  leftSideBearing: number
-  bounds: GlyphBounds
-  geometry: {
-    positions: number[]
-    indices: number[]
-    contours: VectorGlyphContour[]
-  }
-}
-
-export type VectorGlyphCommand =
-  | { type: 'moveTo'; x: number; y: number }
-  | { type: 'lineTo'; x: number; y: number }
-  | { type: 'quadraticCurveTo'; x1: number; y1: number; x: number; y: number }
-  | { type: 'bezierCurveTo'; x1: number; y1: number; x2: number; y2: number; x: number; y: number }
-  | { type: 'closePath' }
-
-export type VectorGlyphContour = VectorGlyphCommand[]
-
-export interface GlyphBounds {
-  minX: number
-  maxX: number
-  minY: number
-  maxY: number
-}
-
-export interface VectorFontMetrics {
-  unitsPerEm: number
-  ascender: number
-  descender: number
-  lineGap: number
-  lineHeight: number
-  underlinePosition: number
-  underlineThickness: number
-  capHeight: number | null
-  xHeight: number | null
-}
-
-export interface VectorFontGlyph {
-  codePoint: number
-  unicode: number | null
-  advanceWidth: number
-  leftSideBearing: number
-  bounds: GlyphBounds
-  positions: Float32Array
-  indices: Uint32Array
-  uvs: Float32Array
-  contours: VectorGlyphContour[]
-  meshGeometry?: MeshGeometry
-}
-
-export interface VectorFont {
-  descriptor: NormalizedFontDescriptor & { style: string }
-  metrics: VectorFontMetrics
-  glyphs: Map<number, VectorFontGlyph>
-  kerning: Map<number, Map<number, number>>
-  charset: Set<number>
-  quality: number
-  getGlyph: (codePoint: number) => VectorFontGlyph | undefined
-  getKerning: (left: number, right: number) => number
-  fallbackGlyph: VectorFontGlyph
-}
-
-const manifestPromiseRef: { current: Promise<Map<string, ManifestEntry>> | null } = { current: null }
+const manifestPromiseRef: { current: Promise<Map<string, ManifestEntry[]>> | null } = { current: null }
 const fontPromiseCache = new Map<string, Promise<VectorFont>>()
 const fontInstanceCache = new Map<string, VectorFont>()
 
 export async function resolveVectorFont(style: FontStyleRequest): Promise<VectorFont> {
-  const normalized = normalizeFontRequest(style)
-  return resolveVectorFontByDescriptor(normalized)
+  const descriptor = normalizeFontRequest(style)
+  return resolveVectorFontByDescriptor(descriptor)
 }
 
 export async function resolveVectorFontByDescriptor(descriptor: NormalizedFontDescriptor): Promise<VectorFont> {
-  const key = descriptorKey(descriptor)
-  let fontPromise = fontPromiseCache.get(key)
-  if (!fontPromise) {
-    fontPromise = loadVectorFont(descriptor).catch((error) => {
-      fontPromiseCache.delete(key)
-      throw error
-    })
-    fontPromiseCache.set(key, fontPromise)
+  const cacheKey = descriptorKey(descriptor)
+  if (fontInstanceCache.has(cacheKey)) {
+    return fontInstanceCache.get(cacheKey)!
   }
-  return fontPromise
+  if (!fontPromiseCache.has(cacheKey)) {
+    const promise = loadVectorFont(descriptor)
+      .then((font) => {
+        fontInstanceCache.set(cacheKey, font)
+        return font
+      })
+      .catch((error) => {
+        fontPromiseCache.delete(cacheKey)
+        throw error
+      })
+    fontPromiseCache.set(cacheKey, promise)
+  }
+  return fontPromiseCache.get(cacheKey)!
 }
 
 export function getLoadedVectorFont(descriptor: NormalizedFontDescriptor): VectorFont | null {
-  return fontInstanceCache.get(descriptorKey(descriptor)) ?? null
+  const cacheKey = descriptorKey(descriptor)
+  return fontInstanceCache.get(cacheKey) ?? null
 }
 
 async function loadVectorFont(descriptor: NormalizedFontDescriptor): Promise<VectorFont> {
   const manifest = await loadManifest()
-  const key = descriptorKey(descriptor)
-  let entry = manifest.get(key)
-
-  if (!entry) {
-    // Attempt to fallback by weight
-    const weightFallbackKey = descriptorKey({ ...descriptor, weight: 400 })
-    entry = manifest.get(weightFallbackKey)
+  const entries = manifest.get(descriptorKey(descriptor))
+  if (!entries?.length) {
+    throw new Error(`[vector-font] missing descriptor ${descriptor.family}`)
   }
-
-  if (!entry) {
-    // fallback to Inter regular
-    entry = manifest.get(descriptorKey({ family: 'Inter', weight: 400, italic: false }))
-  }
-
-  if (!entry) {
-    console.warn(`[vector-fonts] manifest missing entry for ${descriptor.family}, using placeholder glyphs`)
-    const placeholder = createPlaceholderFont(descriptor)
-    fontInstanceCache.set(descriptorKey(placeholder.descriptor), placeholder)
-    return placeholder
-  }
-
-  const response = await fetch(entry.data, { cache: 'force-cache' })
+  const entry = entries[0]
+  const response = await fetch(entry.data, { cache: 'no-store' })
   if (!response.ok) {
-    console.warn(`[vector-fonts] failed to load data at ${entry.data}, using placeholder glyphs`)
-    const placeholder = createPlaceholderFont(descriptor)
-    fontInstanceCache.set(descriptorKey(placeholder.descriptor), placeholder)
-    return placeholder
+    throw new Error(`[vector-font] failed to load descriptor ${entry.data}`)
   }
-
   const asset = (await response.json()) as VectorFontAsset
-  const font = parseVectorFontAsset(asset, entry)
-  fontInstanceCache.set(descriptorKey(font.descriptor), font)
-  return font
+  return parseVectorFontAsset(asset, entry)
 }
 
-async function loadManifest(): Promise<Map<string, ManifestEntry>> {
+async function loadManifest(): Promise<Map<string, ManifestEntry[]>> {
   if (!manifestPromiseRef.current) {
     manifestPromiseRef.current = fetch(MANIFEST_URL, { cache: 'no-store' })
       .then(async (response) => {
         if (!response.ok) {
-          throw new Error(`Vector font manifest not found at ${MANIFEST_URL}`)
+          throw new Error(`[vector-font] manifest missing at ${MANIFEST_URL}`)
         }
-        let manifestJson: { entries: ManifestEntry[] }
-        try {
-          manifestJson = (await response.json()) as { entries: ManifestEntry[] }
-        } catch (error) {
-          throw new Error(`Vector font manifest response was not JSON: ${error}`)
-        }
-        const map = new Map<string, ManifestEntry>()
-        manifestJson.entries.forEach((entry) => {
-          const descriptor: NormalizedFontDescriptor = {
+        const data = (await response.json()) as { entries: ManifestEntry[] }
+        const map = new Map<string, ManifestEntry[]>()
+        for (const entry of data.entries) {
+          const key = descriptorKey({
             family: extractPrimaryFamily(entry.family),
             weight: entry.weight,
             italic: entry.italic,
+          })
+          const existing = map.get(key)
+          if (existing) {
+            existing.push(entry)
+          } else {
+            map.set(key, [entry])
           }
-          map.set(descriptorKey(descriptor), entry)
-        })
+        }
         return map
       })
       .catch((error) => {
-        console.error('[vector-fonts] failed to load manifest', error)
+        console.error('[vector-font] failed to load manifest', error)
         manifestPromiseRef.current = null
-        return new Map()
+        throw error
       })
   }
-  return manifestPromiseRef.current
+  return manifestPromiseRef.current!
 }
 
 function parseVectorFontAsset(asset: VectorFontAsset, entry: ManifestEntry): VectorFont {
   const glyphMap = new Map<number, VectorFontGlyph>()
   const charset = new Set<number>(asset.charset ?? [])
-
   for (const [key, glyphAsset] of Object.entries(asset.glyphs)) {
     const codePoint = Number.parseInt(key, 10)
-    if (!Number.isFinite(codePoint)) {
-      continue
-    }
-
+    if (!Number.isFinite(codePoint)) continue
     const positions = new Float32Array(glyphAsset.geometry.positions)
     const indices = new Uint32Array(glyphAsset.geometry.indices)
-    const uvs = new Float32Array(positions.length) // zero-initialised
-
     const glyph: VectorFontGlyph = {
       codePoint,
-      unicode: glyphAsset.unicode ?? null,
+      unicode: glyphAsset.unicode,
       advanceWidth: glyphAsset.advanceWidth,
       leftSideBearing: glyphAsset.leftSideBearing,
       bounds: glyphAsset.bounds,
       positions,
       indices,
-      uvs,
+      uvs: new Float32Array(positions.length),
       contours: glyphAsset.geometry.contours ?? [],
     }
-
     glyphMap.set(codePoint, glyph)
     charset.add(codePoint)
   }
@@ -240,40 +211,25 @@ function parseVectorFontAsset(asset: VectorFontAsset, entry: ManifestEntry): Vec
     }
   }
 
-  const fallbackCodes = [
-    '?'.codePointAt(0),
-    0x25a1, // white square
-    32, // space
-  ].filter((code): code is number => typeof code === 'number')
+  const fallbackGlyph = glyphMap.values().next().value
+  if (!fallbackGlyph) {
+    throw new Error('vector font contains no glyphs')
+  }
 
-  let fallbackGlyph: VectorFontGlyph | undefined
-  for (const code of fallbackCodes) {
-    const candidate = glyphMap.get(code)
-    if (candidate) {
-      fallbackGlyph = candidate
-      break
-    }
-  }
-  if (!fallbackGlyph) {
-    fallbackGlyph = glyphMap.values().next().value
-  }
-  if (!fallbackGlyph) {
-    throw new Error('Vector font asset contained no glyphs')
+  const descriptor: NormalizedFontDescriptor = {
+    family: extractPrimaryFamily(entry.family),
+    weight: entry.weight,
+    italic: entry.italic,
   }
 
   const font: VectorFont = {
-    descriptor: {
-      family: extractPrimaryFamily(entry.family),
-      weight: entry.weight,
-      italic: entry.italic,
-      style: entry.style,
-    },
+    descriptor,
     metrics: asset.metrics,
     glyphs: glyphMap,
     kerning,
     charset,
     quality: asset.quality ?? 1,
-    fallbackGlyph: fallbackGlyph,
+    fallbackGlyph,
     getGlyph(codePoint: number) {
       return glyphMap.get(codePoint) ?? fallbackGlyph
     },
@@ -285,125 +241,11 @@ function parseVectorFontAsset(asset: VectorFontAsset, entry: ManifestEntry): Vec
   return font
 }
 
-export function ensureGlyphMeshGeometry(glyph: VectorFontGlyph): MeshGeometry | null {
-  if (glyph.positions.length === 0 || glyph.indices.length === 0) {
-    return null
-  }
-  if (!glyph.meshGeometry) {
-    glyph.meshGeometry = new MeshGeometry({
-      positions: glyph.positions,
-      uvs: glyph.uvs,
-      indices: glyph.indices,
-    })
-  }
-  return glyph.meshGeometry
+function descriptorKey(descriptor: NormalizedFontDescriptor) {
+  const style = descriptor.italic ? 'italic' : 'normal'
+  return `${descriptor.family}:${descriptor.weight}:${style}`
 }
 
-const PLACEHOLDER_CHARSET: number[] = (() => {
-  const codes = new Set<number>()
-  for (let code = 32; code <= 126; code += 1) {
-    codes.add(code)
-  }
-  codes.add(0xa0)
-  return [...codes]
-})()
-
-function createPlaceholderFont(descriptor: NormalizedFontDescriptor): VectorFont {
-  const unitsPerEm = 2048
-  const ascender = Math.round(unitsPerEm * 0.8)
-  const descender = -Math.round(unitsPerEm * 0.25)
-  const lineGap = Math.round(unitsPerEm * 0.05)
-  const lineHeight = ascender - descender + lineGap
-  const underlinePosition = Math.round(descender * 0.5)
-  const underlineThickness = Math.round(unitsPerEm * 0.05)
-
-  const glyphs = new Map<number, VectorFontGlyph>()
-  const charset = new Set<number>()
-
-  const indices = new Uint32Array([0, 1, 2, 0, 2, 3])
-
-  for (const code of PLACEHOLDER_CHARSET) {
-    const unicode = code
-    charset.add(code)
-
-    const isWhitespace = code === 32 || code === 0xa0 || code === 9
-    const widthMultiplier =
-      code === 32 || code === 0xa0 ? 0.35 : code === 46 || code === 44 ? 0.3 : code === 73 ? 0.35 : 0.6
-    const advanceWidth = Math.max(1, Math.round(unitsPerEm * widthMultiplier))
-
-    let positions: Float32Array
-    let glyphIndices: Uint32Array
-
-    if (isWhitespace) {
-      positions = new Float32Array()
-      glyphIndices = new Uint32Array()
-    } else {
-      positions = new Float32Array([
-        0,
-        0,
-        advanceWidth,
-        0,
-        advanceWidth,
-        -ascender,
-        0,
-        -ascender,
-      ])
-      glyphIndices = indices.slice()
-    }
-
-    const glyph: VectorFontGlyph = {
-      codePoint: code,
-      unicode,
-      advanceWidth,
-      leftSideBearing: 0,
-      bounds: {
-        minX: 0,
-        maxX: advanceWidth,
-        minY: -ascender,
-        maxY: 0,
-      },
-      positions,
-      indices: glyphIndices,
-      uvs: new Float32Array(positions.length),
-      contours: [],
-    }
-
-    glyphs.set(code, glyph)
-  }
-
-  const kerning = new Map<number, Map<number, number>>()
-  const fallbackGlyph = glyphs.get('?'.codePointAt(0) ?? 63) ?? glyphs.get(42)! // '*' fallback
-
-  const font: VectorFont = {
-    descriptor: {
-      family: descriptor.family,
-      weight: descriptor.weight,
-      italic: descriptor.italic,
-      style: descriptor.italic ? 'italic' : 'normal',
-    },
-    metrics: {
-      unitsPerEm,
-      ascender,
-      descender,
-      lineGap,
-      lineHeight,
-      underlinePosition,
-      underlineThickness,
-      capHeight: ascender,
-      xHeight: Math.round(ascender * 0.7),
-    },
-    glyphs,
-    kerning,
-    charset,
-    quality: 1,
-    fallbackGlyph,
-    getGlyph(codePoint: number) {
-      return glyphs.get(codePoint) ?? fallbackGlyph
-    },
-    getKerning(_: number, __: number) {
-      return 0
-    },
-  }
-
-  return font
+export function extractPrimaryFamily(value: string) {
+  return value.split(',')[0]?.trim() ?? value
 }

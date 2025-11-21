@@ -7,10 +7,6 @@
 - `workers/tiler` contains the asset tiler (Sharp + S3 helpers in `src/index.ts`).
 - `scrapbook_app_plan.md` captures long-term scope—consult it before proposing architecture changes.
 
-## Dependency Installs
-- **Windows owns installs.** Only run `pnpm install`, `pnpm add`, or other dependency-mutating commands from Windows CMD/PowerShell so the `node_modules` tree stays tied to the same pnpm store.
-- Inside WSL/Linux we should run scripts only (dev/lint/test/build). If a script needs new packages or a reinstall, ping the user to execute it from Windows.
-
 ## Build, Test, and Development Commands
 - `pnpm dev` — launches every package’s `dev` script (Vite, Nest watcher, tiler stub).
 - `pnpm build` — type-checks and emits production artifacts for all packages.
@@ -23,6 +19,13 @@
 - Use descriptive file names (`*.service.ts`, `*.controller.ts`, React components in `PascalCase.tsx`).
 - Formatting: Prettier (via `pnpm --filter apps/api format`) for the API; Vite project follows ESLint + TypeScript rules.
 - Icons: when you need UI glyphs, pull them from `lucide-react` for consistency with the existing toolbar/settings menus.
+- Whenever possible, for API, type, or library references, query the Context7 MCP documentation first (e.g., pixi-viewport, PixiJS, NestJS) before searching elsewhere or inferring from memory.
+
+## Camera Precision Reference
+
+- Use the values exported from `apps/web/src/canvas/viewport/zoomLimits.ts` for min/max zoom limits, and avoid hardcoded thresholds elsewhere.
+- `MIN_VIEWPORT_SCALE` (`≈1.45e-11`) and `MAX_VIEWPORT_SCALE` (`≈4.03e10`) keep round-trip precision within 0.25 px for 1e5-sized coordinates.
+- Tests under `apps/web/src/canvas/viewport/zoomLimits.spec.ts` recompute the limits; rerun them if you touch the tolerance or translation assumptions.
 
 ## Testing Guidelines
 - API tests use Jest with `--runInBand`. Unit specs live next to source files (`*.spec.ts`).

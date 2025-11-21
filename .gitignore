@@ -1,5 +1,9 @@
 # node
 node_modules
+.pnpm-store
+
+# local asset storage (when not using S3)
+storage
 
 # build artifacts
 apps/**/dist

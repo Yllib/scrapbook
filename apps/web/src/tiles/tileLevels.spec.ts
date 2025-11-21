@@ -46,15 +46,15 @@ describe('tileLevels helpers', () => {
   })
 
   it('picks level zero when density exceeds threshold', () => {
-    expect(pickTileLevel(1.2, 5)).toBe(0)
+    expect(pickTileLevel(Math.log2(1.2), 5)).toBe(0)
   })
 
   it('picks higher zoom levels as density drops', () => {
-    expect(pickTileLevel(0.4, 5)).toBe(2)
-    expect(pickTileLevel(0.01, 4)).toBe(4)
+    expect(pickTileLevel(Math.log2(0.4), 5)).toBe(2)
+    expect(pickTileLevel(Math.log2(0.01), 4)).toBe(4)
   })
 
   it('caps picked level at the available maximum', () => {
-    expect(pickTileLevel(0.001, 2)).toBe(2)
+    expect(pickTileLevel(Math.log2(0.001), 2)).toBe(2)
   })
 })

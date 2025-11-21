@@ -12,15 +12,16 @@ export interface TileLevelDefinition {
 
 export const MIN_TILE_PIXEL_DENSITY = 0.85
 
-export function pickTileLevel(baseDensity: number, maxLevel: number, minDensity = MIN_TILE_PIXEL_DENSITY) {
-  if (!Number.isFinite(baseDensity) || baseDensity <= 0) {
+export function pickTileLevel(logDensity: number, maxLevel: number, minDensity = MIN_TILE_PIXEL_DENSITY) {
+  if (!Number.isFinite(logDensity)) {
     return Math.min(Math.max(0, maxLevel), 0)
   }
-  if (baseDensity >= minDensity) {
+  const logThreshold = Math.log2(Math.max(Number.EPSILON, minDensity))
+  if (logDensity >= logThreshold) {
     return 0
   }
-  const ratio = minDensity / baseDensity
-  const level = Math.ceil(Math.log2(ratio))
+  const delta = logThreshold - logDensity
+  const level = Math.ceil(delta)
   if (!Number.isFinite(level) || level <= 0) {
     return 0
   }

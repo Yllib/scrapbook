@@ -4,12 +4,12 @@
   "version": "0.0.0",
   "type": "module",
   "scripts": {
-    "dev": "vite",
+    "dev": "vite --host 0.0.0.0",
     "build": "tsc -b && vite build",
     "lint": "eslint .",
     "preview": "vite preview",
     "typecheck": "tsc --noEmit -p tsconfig.app.json",
-    "test": "vitest run",
+    "test": "vitest run --pool=vmThreads",
     "generate:vector-fonts": "node scripts/generate-vector-fonts.mjs",
     "generate-vector-fonts": "pnpm run generate:vector-fonts"
   },
@@ -19,7 +19,7 @@
     "gl-matrix": "3.4.4",
     "idb-keyval": "6.2.2",
     "lucide-react": "0.469.0",
-    "pixi.js": "8.14.0",
+    "react-router-dom": "6.28.0",
     "rbush": "4.0.1",
     "react": "19.2.0",
     "react-dom": "19.2.0",
@@ -27,12 +27,13 @@
     "zustand": "5.0.8"
   },
   "devDependencies": {
-    "@esbuild/linux-x64": "0.25.12",
+    "@esbuild/linux-x64": "0.21.5",
     "@eslint/js": "^9.36.0",
     "@rollup/rollup-linux-x64-gnu": "4.53.1",
     "@types/react": "^19.1.13",
     "@types/react-dom": "^19.1.9",
     "@vitejs/plugin-react": "^5.0.3",
+    "dotenv": "16.6.1",
     "eslint": "^9.36.0",
     "eslint-plugin-react-hooks": "^5.2.0",
     "eslint-plugin-react-refresh": "^0.4.20",

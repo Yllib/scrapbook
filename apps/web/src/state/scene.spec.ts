@@ -8,16 +8,21 @@ import {
   DEFAULT_FONT_FAMILY,
   DEFAULT_FONT_SIZE,
 } from './scene'
-
 const resetSceneStore = () => {
-  useSceneStore.setState({
+  useSceneStore.setState(() => ({
     nodes: [],
     selectedIds: [],
     lastSelectedId: null,
-    world: { position: { x: 0, y: 0 }, scale: 1 },
+    world: {
+      position: { x: 0, y: 0 },
+      scale: 1,
+    },
     viewport: { width: 0, height: 0 },
     history: { past: [], future: [], recording: false },
-  })
+    showGrid: true,
+    showOrigin: true,
+    backgroundColor: '#020617',
+  }))
 }
 
 const createNode = (overrides: Partial<Omit<SceneNode, 'type'>>) => {

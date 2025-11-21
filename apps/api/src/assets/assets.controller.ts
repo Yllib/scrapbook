@@ -29,6 +29,21 @@ type UploadedFile = {
 import { AssetsService } from './assets.service';
 import { StorageService } from '../storage/storage.service';
 
+const readSvgDimensions = async (buffer: Buffer) => {
+  const text = buffer.toString('utf8')
+  const viewBoxMatch = text.match(/viewBox\s*=\s*"([\d.-]+)\s+([\d.-]+)\s+([\d.-]+)\s+([\d.-]+)"/i)
+  const widthMatch = text.match(/width\s*=\s*"([\d.+-]+)"/i)
+  const heightMatch = text.match(/height\s*=\s*"([\d.+-]+)"/i)
+  const parseNum = (v?: string) => (v ? Number.parseFloat(v) : undefined)
+  let width = parseNum(widthMatch?.[1])
+  let height = parseNum(heightMatch?.[1])
+  if ((!width || !height) && viewBoxMatch) {
+    width = parseNum(viewBoxMatch[3])
+    height = parseNum(viewBoxMatch[4])
+  }
+  return { width, height }
+}
+
 interface CreateAssetBody {
   projectId?: string;
 }
@@ -84,7 +99,8 @@ export class AssetsController {
       body: buffer,
     });
 
-    const metadata = await sharp(buffer).metadata();
+    const isSvg = mimetype === 'image/svg+xml';
+    const metadata = isSvg ? await readSvgDimensions(buffer) : await sharp(buffer).metadata();
 
     const asset = await this.assets.createAsset({
       projectId,
@@ -94,18 +110,23 @@ export class AssetsController {
       checksum: hash,
       width: metadata.width ?? undefined,
       height: metadata.height ?? undefined,
+      isSvg,
       storageKey: stored.key,
     });
 
-    await this.assets.enqueueOperation({
-      assetId: asset.id,
-      projectId,
-      type: 'asset.process',
-      payload: {
-        storageKey: stored.key,
-        mimeType: mimetype,
-      },
-    });
+    if (!isSvg) {
+      await this.assets.enqueueOperation({
+        assetId: asset.id,
+        projectId,
+        type: 'asset.process',
+        payload: {
+          storageKey: stored.key,
+          mimeType: mimetype,
+        },
+      });
+    } else {
+      await this.assets.updateAssetStatus(asset.id, 'READY');
+    }
 
     return {
       assetId: asset.id,
@@ -120,6 +141,17 @@ export class AssetsController {
       throw new NotFoundException('Asset not found');
     }
     return asset;
+  }
+
+  @Get(':id/svg')
+  async getAssetSvg(@Param('id') id: string, @Res() res: Response) {
+    const asset = await this.assets.findAssetById(id);
+    if (!asset || !asset.isSvg) {
+      throw new NotFoundException('SVG not found');
+    }
+    const stream = await this.storage.getObjectStream(asset.storageKey);
+    res.setHeader('Content-Type', 'image/svg+xml');
+    stream.pipe(res);
   }
 
   @Get(':id/variant/:format')

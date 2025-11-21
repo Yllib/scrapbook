@@ -65,6 +65,9 @@ export function layoutVectorText(options: VectorTextLayoutOptions): VectorTextLa
     let penX = 0
     let lineMinX = Number.POSITIVE_INFINITY
     let lineMaxX = Number.NEGATIVE_INFINITY
+    let lineMinY = Number.POSITIVE_INFINITY
+    let lineMaxY = Number.NEGATIVE_INFINITY
+    let hasGlyphBounds = false
     let previousGlyph: VectorFontGlyph | undefined
 
     for (const char of Array.from(lineText)) {
@@ -84,10 +87,13 @@ export function layoutVectorText(options: VectorTextLayoutOptions): VectorTextLa
         const glyphMaxY = baseline + glyph.bounds.maxY * scale
         lineMinX = Math.min(lineMinX, glyphMinX)
         lineMaxX = Math.max(lineMaxX, glyphMaxX)
+        lineMinY = Math.min(lineMinY, glyphMinY)
+        lineMaxY = Math.max(lineMaxY, glyphMaxY)
         globalMinX = Math.min(globalMinX, glyphMinX)
         globalMaxX = Math.max(globalMaxX, glyphMaxX)
         globalMinY = Math.min(globalMinY, glyphMinY)
         globalMaxY = Math.max(globalMaxY, glyphMaxY)
+        hasGlyphBounds = true
       }
 
       glyphPlacements.push({
@@ -106,10 +112,6 @@ export function layoutVectorText(options: VectorTextLayoutOptions): VectorTextLa
       lineMaxX = lineWidth
     }
 
-    // Ensure vertical bounds account for ascender/descender even if glyph bounds are missing.
-    globalMinY = Math.min(globalMinY, baseline - ascenderPx)
-    globalMaxY = Math.max(globalMaxY, baseline - font.metrics.descender * scale)
-
     let offset = 0
     if (normalizedAlign === 'center') {
       offset = -lineWidth / 2
@@ -125,8 +127,17 @@ export function layoutVectorText(options: VectorTextLayoutOptions): VectorTextLa
       lineMaxX += offset
     }
 
+    const lineTop = baseline - ascenderPx
+    const lineBottom = baseline - font.metrics.descender * scale
     globalMinX = Math.min(globalMinX, lineMinX)
     globalMaxX = Math.max(globalMaxX, lineMaxX)
+    if (hasGlyphBounds && Number.isFinite(lineMinY) && Number.isFinite(lineMaxY)) {
+      globalMinY = Math.min(globalMinY, lineMinY)
+      globalMaxY = Math.max(globalMaxY, lineMaxY)
+    } else {
+      globalMinY = Math.min(globalMinY, lineTop)
+      globalMaxY = Math.max(globalMaxY, lineBottom)
+    }
 
     layoutLines.push({
       glyphs: glyphPlacements,

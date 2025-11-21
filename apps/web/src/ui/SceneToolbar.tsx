@@ -11,6 +11,7 @@ import {
   type RefObject,
 } from 'react'
 import { createPortal } from 'react-dom'
+import { useParams } from 'react-router-dom'
 import {
   useSceneStore,
   type SceneNode,
@@ -20,10 +21,12 @@ import {
   DEFAULT_LINE_HEIGHT,
   DEFAULT_TEXT_ALIGN,
   DEFAULT_FONT_WEIGHT,
+  getEffectiveScaleFromWorld,
 } from '../state/scene'
 import { uploadAsset, waitForAssetReady } from '../api/assets'
 import { useDialogStore } from '../state/dialog'
 import { summarizeTileLevels } from '../tiles/tileLevels'
+import { toast } from '../state/toast'
 import {
   AlignCenter,
   AlignLeft,
@@ -59,7 +62,6 @@ const DEFAULT_STROKE = '#0ea5e9'
 const DEFAULT_RECT = { width: 200, height: 160 }
 const DEFAULT_ELLIPSE = { width: 200, height: 200 }
 const DEFAULT_TRIANGLE = { width: 220, height: 220 }
-
 interface ToolbarIconButtonProps {
   label: string
   icon: ReactNode
@@ -85,6 +87,7 @@ export function SceneToolbar() {
     { label: 'Roboto Mono', value: '"Roboto Mono", monospace' },
   ]
   const [uploading, setUploading] = useState(false)
+  const viewOnly = useSceneStore((state) => state.viewOnly)
   const createShape = useSceneStore((state) => state.createShapeNode)
   const createImage = useSceneStore((state) => state.createImageNode)
   const createText = useSceneStore((state) => state.createTextNode)
@@ -113,9 +116,12 @@ export function SceneToolbar() {
   const setFontWeight = useSceneStore((state) => state.setSelectedFontWeight)
   const setFontStyle = useSceneStore((state) => state.setSelectedFontStyle)
   const setUnderline = useSceneStore((state) => state.setSelectedUnderline)
-  const worldScale = useSceneStore((state) => state.world.scale)
+  const effectiveWorldScale = useSceneStore((state) => getEffectiveScaleFromWorld(state.world))
   const uploadInputRef = useRef<HTMLInputElement>(null)
+  const { id: projectId } = useParams()
   const toolbarSectionsRef = useRef<HTMLDivElement>(null)
+
+  if (viewOnly) return null
 
   useEffect(() => {
     if (typeof window === 'undefined') return
@@ -155,8 +161,7 @@ export function SceneToolbar() {
       return node?.type === 'shape' && node.shape?.kind === 'rectangle'
     })
 
-  const zoomFactor = useMemo(() => (worldScale !== 0 ? 1 / worldScale : 1), [worldScale])
-
+  const zoomFactor = useMemo(() => (effectiveWorldScale !== 0 ? 1 / effectiveWorldScale : 1), [effectiveWorldScale])
   const aspectRatioState = useMemo(() => {
     if (selectedIds.length === 0) return null
     const selectedNodes = selectedIds
@@ -241,8 +246,9 @@ export function SceneToolbar() {
       const file = event.target.files?.[0]
       if (!file) return
       setUploading(true)
+      const toastId = toast.info('Uploading image…')
       try {
-        const { assetId } = await uploadAsset(file)
+        const { assetId } = await uploadAsset(file, projectId ?? undefined)
         const meta = await waitForAssetReady(assetId)
         const intrinsicWidth = meta.width ?? 512
         const intrinsicHeight = meta.height ?? 512
@@ -262,19 +268,21 @@ export function SceneToolbar() {
             name: file.name || 'Image',
             size: {
               width: intrinsicWidth * zoomFactor,
-              height: intrinsicHeight * zoomFactor,
-            },
+            height: intrinsicHeight * zoomFactor,
           },
-        )
+        },
+      )
+        toast.success('Image ready', file.name)
       } catch (error) {
         console.error('Failed to upload image asset', error)
-        alert('Failed to upload image asset. Please try again.')
+        toast.error('Upload failed', error instanceof Error ? error.message : undefined)
       } finally {
         setUploading(false)
+        toast.dismiss(toastId)
         event.target.value = ''
       }
     },
-    [createImage, zoomFactor],
+    [createImage, zoomFactor, projectId],
   )
 
   const handleFillChange = useCallback(
@@ -432,34 +440,28 @@ export function SceneToolbar() {
           <input type="color" value={fillValue} onChange={handleFillChange} disabled={selectedCount === 0} />
         </div>
       </label>
-      <label className="toolbar-style-control">
+      <label className="toolbar-style-control toolbar-style-control--stroke">
         <span>Stroke</span>
-        <div className="color-swatch">
-          <input type="color" value={strokeValue} onChange={handleStrokeColorChange} disabled={selectedCount === 0} />
-        </div>
-      </label>
-      <label className="toolbar-style-control">
-        <span>Width</span>
         <input
+          className="toolbar-stroke-width"
           type="number"
           min={0}
           step={1}
           value={strokeWidthValue}
           onChange={handleStrokeWidthChange}
           disabled={selectedCount === 0}
+          aria-label="Stroke width"
         />
+        <div className="color-swatch">
+          <input type="color" value={strokeValue} onChange={handleStrokeColorChange} disabled={selectedCount === 0} />
+        </div>
       </label>
-      <label className="toolbar-style-control">
-        <span>Radius</span>
-        <input
-          type="number"
-          min={0}
-          step={1}
-          value={cornerRadiusValue}
-          onChange={handleCornerRadiusChange}
-          disabled={!canEditCornerRadius}
-        />
-      </label>
+      {canEditCornerRadius && (
+        <label className="toolbar-style-control">
+          <span>Radius</span>
+          <input type="number" min={0} step={1} value={cornerRadiusValue} onChange={handleCornerRadiusChange} />
+        </label>
+      )}
       <div className="toolbar-style-control toolbar-style-control--aspect">
         <span>Aspect Ratio</span>
         <button
@@ -485,26 +487,31 @@ export function SceneToolbar() {
   useLayoutEffect(() => {
     if (!canEditText) return
     const updatePosition = () => {
-      const toolbar = document.querySelector('.scene-toolbar')
       const margin = 16
       const panelRect = textPanelRef.current?.getBoundingClientRect()
       const panelWidth = panelRect?.width ?? 280
       const panelHeight = panelRect?.height ?? 220
-      if (!toolbar) {
+      const isMobile = window.innerWidth <= 720
+      if (isMobile) {
         setTextPanelStyle({ top: margin, left: margin })
         return
       }
-      const toolbarRect = toolbar.getBoundingClientRect()
-      const preferRight = toolbarRect.left < window.innerWidth / 2
-      let left = preferRight ? toolbarRect.right + margin : toolbarRect.left - panelWidth - margin
+      const selectionToolbar = document.querySelector('.selection-toolbar')
+      const baseToolbar = document.querySelector('.scene-toolbar')
+      const anchor = (selectionToolbar as HTMLElement | null) ?? (baseToolbar as HTMLElement | null)
+      if (!anchor) {
+        setTextPanelStyle({ top: margin, left: margin })
+        return
+      }
+      const anchorRect = anchor.getBoundingClientRect()
+      let left = anchorRect.right + margin
       if (left + panelWidth > window.innerWidth - margin) {
         left = window.innerWidth - panelWidth - margin
       }
       if (left < margin) {
         left = margin
       }
-      const preferTop = toolbarRect.top < window.innerHeight / 2
-      let top = preferTop ? toolbarRect.top : window.innerHeight - panelHeight - margin
+      let top = anchorRect.top
       if (top + panelHeight > window.innerHeight - margin) {
         top = window.innerHeight - panelHeight - margin
       }
@@ -563,6 +570,17 @@ export function SceneToolbar() {
       ],
     },
     {
+      key: 'history',
+      label: 'History',
+      commands: [
+        { key: 'undo', label: 'Undo', icon: <Undo2 size={16} strokeWidth={1.8} />, onClick: undo, disabled: !canUndo },
+        { key: 'redo', label: 'Redo', icon: <Redo2 size={16} strokeWidth={1.8} />, onClick: redo, disabled: !canRedo },
+      ],
+    },
+  ]
+
+  const selectionToolbarSections: ToolbarSection[] = [
+    {
       key: 'style',
       label: 'Style',
       content: styleSectionContent,
@@ -586,14 +604,6 @@ export function SceneToolbar() {
           disabled: selectedCount === 0,
           variant: 'danger',
         },
-      ],
-    },
-    {
-      key: 'history',
-      label: 'History',
-      commands: [
-        { key: 'undo', label: 'Undo', icon: <Undo2 size={16} strokeWidth={1.8} />, onClick: undo, disabled: !canUndo },
-        { key: 'redo', label: 'Redo', icon: <Redo2 size={16} strokeWidth={1.8} />, onClick: redo, disabled: !canRedo },
       ],
     },
     {
@@ -636,20 +646,20 @@ export function SceneToolbar() {
     <>
       <aside className="scene-toolbar" role="toolbar" aria-label="Scene actions">
         <div className="toolbar-sections" ref={toolbarSectionsRef}>
-        {toolbarSections.map((section) => (
-          <section key={section.key} className="toolbar-section">
-            <p className="toolbar-label">{section.label}</p>
-            {section.commands && section.commands.length > 0 && (
-              <div className="toolbar-icon-list">
-                {section.commands.map(({ key, ...command }) => (
-                  <ToolbarIconButton key={key} {...command} />
-                ))}
-              </div>
-            )}
-            {section.content ?? null}
-          </section>
-        ))}
-      </div>
+          {toolbarSections.map((section) => (
+            <section key={section.key} className="toolbar-section">
+              <p className="toolbar-label">{section.label}</p>
+              {section.commands && section.commands.length > 0 && (
+                <div className="toolbar-icon-list">
+                  {section.commands.map(({ key, ...command }) => (
+                    <ToolbarIconButton key={key} {...command} />
+                  ))}
+                </div>
+              )}
+              {section.content ?? null}
+            </section>
+          ))}
+        </div>
         <input
           ref={uploadInputRef}
           type="file"
@@ -658,6 +668,25 @@ export function SceneToolbar() {
           style={{ display: 'none' }}
         />
       </aside>
+      {selectedCount > 0 && (
+        <aside className="scene-toolbar selection-toolbar" role="toolbar" aria-label="Selection tools">
+          <div className="toolbar-sections selection-toolbar__sections">
+            {selectionToolbarSections.map((section) => (
+              <section key={section.key} className="toolbar-section">
+                <p className="toolbar-label">{section.label}</p>
+                {section.commands && section.commands.length > 0 && (
+                  <div className="toolbar-icon-list">
+                    {section.commands.map(({ key, ...command }) => (
+                      <ToolbarIconButton key={key} {...command} />
+                    ))}
+                  </div>
+                )}
+                {section.content ?? null}
+              </section>
+            ))}
+          </div>
+        </aside>
+      )}
       {canEditText && (
         <TextInspectorPanel
           panelRef={textPanelRef}
@@ -758,11 +787,11 @@ function TextInspectorPanel(props: TextInspectorPanelProps) {
       </header>
       <label className="toolbar-style-control toolbar-style-control--block">
         <span>Content</span>
-        <textarea value={textValue} onChange={onTextChange} rows={3} />
+        <textarea className="text-inspector__content" value={textValue} onChange={onTextChange} rows={3} />
       </label>
       <label className="toolbar-style-control">
         <span>Font</span>
-        <select value={fontFamily} onChange={onFontFamilyChange}>
+        <select className="text-inspector__font" value={fontFamily} onChange={onFontFamilyChange}>
           {fontOptions.map((option) => (
             <option key={option.value} value={option.value}>
               {option.label}

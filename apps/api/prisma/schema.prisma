@@ -22,82 +22,135 @@ enum AssetFormat {
   JPEG
 }
 
+enum UserRole {
+  USER
+  ADMIN
+}
+
+enum CollaboratorRole {
+  OWNER
+  EDITOR
+  VIEWER
+}
+
+model User {
+  id             String                @id @default(cuid())
+  email          String                @unique
+  passwordHash   String
+  role           UserRole              @default(USER)
+  createdAt      DateTime              @default(now())
+  projects       Project[]             @relation("OwnerProjects")
+  collaborations ProjectCollaborator[]
+}
+
 model Project {
-  id        String    @id @default(cuid())
-  name      String
-  createdAt DateTime  @default(now())
-  updatedAt DateTime  @updatedAt
-  assets    Asset[]
-  ops       Operation[]
+  id            String                @id @default(cuid())
+  name          String
+  scene         Json?
+  createdAt     DateTime              @default(now())
+  updatedAt     DateTime              @updatedAt
+  ownerId       String?
+  owner         User?                 @relation("OwnerProjects", fields: [ownerId], references: [id], onDelete: SetNull)
+  assets        Asset[]
+  ops           Operation[]
+  collaborators ProjectCollaborator[]
+  shareTokens   ShareToken[]
+
+  @@index([ownerId])
+}
+
+model ShareToken {
+  id        String   @id @default(cuid())
+  token     String   @unique
+  projectId String
+  project   Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  createdAt DateTime @default(now())
+  revokedAt DateTime?
+
+  @@index([projectId])
+}
+
+model ProjectCollaborator {
+  projectId String
+  userId    String
+  role      CollaboratorRole @default(EDITOR)
+  createdAt DateTime         @default(now())
+
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@id([projectId, userId])
+  @@index([userId])
 }
 
 model Asset {
-  id            String       @id @default(cuid())
+  id            String         @id @default(cuid())
   projectId     String?
-  project       Project?     @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  project       Project?       @relation(fields: [projectId], references: [id], onDelete: Cascade)
   filename      String
   mimeType      String
+  isSvg         Boolean        @default(false)
   size          Int
   checksum      String
   width         Int?
   height        Int?
-  status        AssetStatus  @default(PENDING)
+  status        AssetStatus    @default(PENDING)
   failureReason String?
   storageKey    String
-  createdAt     DateTime     @default(now())
-  updatedAt     DateTime     @updatedAt
+  createdAt     DateTime       @default(now())
+  updatedAt     DateTime       @updatedAt
   variants      AssetVariant[]
   tiles         AssetTile[]
   operations    Operation[]
 
+  @@unique([checksum, projectId])
   @@index([projectId])
   @@index([status])
-  @@unique([checksum, projectId])
 }
 
 model AssetVariant {
-  id        String      @id @default(cuid())
-  assetId   String
-  asset     Asset       @relation(fields: [assetId], references: [id], onDelete: Cascade)
-  format    AssetFormat
-  width     Int
-  height    Int
-  size      Int
-  mimeType  String
+  id         String      @id @default(cuid())
+  assetId    String
+  asset      Asset       @relation(fields: [assetId], references: [id], onDelete: Cascade)
+  format     AssetFormat
+  width      Int
+  height     Int
+  size       Int
+  mimeType   String
   storageKey String
-  createdAt DateTime    @default(now())
+  createdAt  DateTime    @default(now())
 
   @@index([assetId, format])
 }
 
 model AssetTile {
-  id        String   @id @default(cuid())
-  assetId   String
-  asset     Asset    @relation(fields: [assetId], references: [id], onDelete: Cascade)
-  z         Int
-  x         Int
-  y         Int
-  size      Int
-  mimeType  String
+  id         String   @id @default(cuid())
+  assetId    String
+  asset      Asset    @relation(fields: [assetId], references: [id], onDelete: Cascade)
+  z          Int
+  x          Int
+  y          Int
+  size       Int
+  mimeType   String
   storageKey String
-  createdAt DateTime @default(now())
+  createdAt  DateTime @default(now())
 
   @@unique([assetId, z, x, y])
   @@index([assetId, z])
 }
 
 model Operation {
-  id        String   @id @default(cuid())
-  projectId String?
-  project   Project? @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  assetId   String?
-  asset     Asset?   @relation(fields: [assetId], references: [id], onDelete: Cascade)
-  type      String
-  payload   Json
-  status    OperationStatus @default(PENDING)
-  error     String?
+  id          String          @id @default(cuid())
+  projectId   String?
+  project     Project?        @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  assetId     String?
+  asset       Asset?          @relation(fields: [assetId], references: [id], onDelete: Cascade)
+  type        String
+  payload     Json
+  status      OperationStatus @default(PENDING)
+  error       String?
   processedAt DateTime?
-  createdAt DateTime @default(now())
+  createdAt   DateTime        @default(now())
 
   @@index([projectId])
   @@index([assetId])

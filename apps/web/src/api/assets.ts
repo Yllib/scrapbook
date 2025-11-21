@@ -1,3 +1,5 @@
+import { authFetch, API_BASE } from './client'
+
 export type AssetStatus = 'PENDING' | 'PROCESSING' | 'READY' | 'FAILED'
 
 export interface AssetVariantMeta {
@@ -40,7 +42,7 @@ export async function uploadAsset(file: File, projectId?: string): Promise<Uploa
     formData.append('projectId', projectId)
   }
 
-  const response = await fetch('/assets', {
+  const response = await authFetch(`${API_BASE}/assets`, {
     method: 'POST',
     body: formData,
   })
@@ -53,7 +55,7 @@ export async function uploadAsset(file: File, projectId?: string): Promise<Uploa
 }
 
 export async function fetchAssetMeta(assetId: string): Promise<AssetMeta> {
-  const response = await fetch(`/assets/${assetId}/meta`)
+  const response = await authFetch(`${API_BASE}/assets/${assetId}/meta`)
   if (!response.ok) {
     throw new Error(`Failed to load asset metadata (${response.status})`)
   }
@@ -73,7 +75,9 @@ export async function waitForAssetReady(assetId: string, options: WaitForAssetOp
   // eslint-disable-next-line no-constant-condition
   while (true) {
     const meta = await fetchAssetMeta(assetId)
-    if (meta.status === 'READY') {
+    const hasTiles = Boolean(meta.tiles?.length)
+    const hasVariants = Boolean(meta.variants?.length)
+    if (meta.status === 'READY' && hasTiles && hasVariants) {
       return meta
     }
     if (meta.status === 'FAILED') {

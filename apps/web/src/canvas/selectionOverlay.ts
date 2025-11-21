@@ -118,16 +118,11 @@ export function calculateGroupSelectionOverlay(nodes: SceneNode[]): SelectionOve
   }
 }
 
-export function calculateSelectionHandleSizing(worldScale: number): SelectionHandleSizing {
-  const safeScale = Math.abs(worldScale) < Number.EPSILON ? Number.EPSILON : Math.abs(worldScale)
-  const strokeWidth = BASE_STROKE_SIZE / safeScale
-  const cornerRadius = BASE_HANDLE_SIZE / safeScale
-  const edgeRadius = (BASE_HANDLE_SIZE * 0.75) / safeScale
-  const rotationRadius = BASE_HANDLE_SIZE / safeScale
+export function calculateSelectionHandleSizing(): SelectionHandleSizing {
   return {
-    strokeWidth,
-    cornerRadius,
-    edgeRadius,
-    rotationRadius,
+    strokeWidth: BASE_STROKE_SIZE,
+    cornerRadius: BASE_HANDLE_SIZE,
+    edgeRadius: BASE_HANDLE_SIZE * 0.75,
+    rotationRadius: BASE_HANDLE_SIZE,
   }
 }

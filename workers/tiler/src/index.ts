@@ -1,7 +1,13 @@
+import path from 'node:path'
 import sharp from 'sharp'
+import dotenv from 'dotenv'
 import { PrismaClient } from '@prisma/client'
 import { StorageClient } from './storage'
 import { Config, OperationPayload, WorkerOptions } from './types'
+
+const rootDir = path.resolve(__dirname, '../../..')
+dotenv.config({ path: path.join(rootDir, '.env') })
+dotenv.config({ path: path.join(rootDir, '.env.local'), override: true })
 
 const TILE_SIZE = 256
 
@@ -41,7 +47,7 @@ async function processNext() {
   }
 
   try {
-    const payload = operation.payload as OperationPayload
+    const payload = operation.payload as unknown as OperationPayload
     await processAsset(operation.assetId!, payload)
     await prisma.operation.update({
       where: { id: operation.id },
@@ -204,7 +210,13 @@ async function generateTilesForLevel(
 
       const tilePromise = sharp(tileSource)
         .extract({ left, top, width: tileWidth, height: tileHeight })
-        .resize(TILE_SIZE, TILE_SIZE, { fit: 'contain', background: { r: 0, g: 0, b: 0, alpha: 0 } })
+        .extend({
+          top: 0,
+          left: 0,
+          right: Math.max(0, TILE_SIZE - tileWidth),
+          bottom: Math.max(0, TILE_SIZE - tileHeight),
+          background: { r: 0, g: 0, b: 0, alpha: 0 },
+        })
         .webp({ quality })
         .toBuffer()
         .then(async (buffer) => {

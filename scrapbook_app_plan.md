@@ -5,7 +5,7 @@
 - Targets: desktop, tablet, phone (Chrome, Safari, Firefox; iOS/iPadOS 16+, Android 11+)
 - Performance: 60 fps target. Allow 30 fps minimum on mid-tier phones during heavy pans.
 - Memory budgets: \~256 MB GPU textures mobile, \~1 GB desktop. Cap devicePixelRatio at 1.5 on mobile.
-- Infinite 2D world coordinates with camera math that never clamps pan/zoom
+- Infinite pan with custom SVGStage pointer handlers; zoom stays within a precision-safe window (clamped min/max)
 - Undo/redo with command log and snapshots
 - Scene JSON <1 MB per 1k nodes (excluding assets)
 
@@ -20,7 +20,6 @@
 - React 19.2.0
 - Zustand 5.0.8
 - TanStack Query 5.90.x
-- PixiJS 8.14.0
 - gl-matrix 3.4.4
 - rbush 4.0.1
 - comlink 4.4.2
@@ -75,17 +74,18 @@ Database tables:
 
 ## 4) Rendering
 
-- Pixi stage with world container
-- Texture: atlas for small sprites, individual textures for photos
-- Culling via rbush spatial index
-- Max 200 draw calls/frame
-- Vector text glyphs via precomputed geometry loader
-- Gizmos on overlay layer
+- Rendering now runs entirely inside the `SVGStage` SVG/DOM renderer—Pixi is no longer part of the runtime bundle.
+- `<svg>` root with layered `<g>` elements for nodes, overlays, and hit regions, with absolutely positioned DOM for handles when needed.
+- Maintain tiling logic/image LOD manually (insert `<image>` tiles as needed).
+- Text rendered with `<text>` elements using custom vector-font JSON assets in `public/vector-fonts`; stroke/underline via native SVG attributes.
+- All canvas features must target the SVG renderer plan; there is no Pixi fallback path anymore.
 
 ## 5) Infinite Canvas
 
-- Wheel zoom anchored to cursor, no upper/lower clamp—camera scale must support effectively infinite zoom in and out.
-- Pan with inertia and no world bounds; re-center transforms under the hood to avoid floating-point drift instead of stopping the user.
+- Custom pointer/touch handlers inside `SVGStage` manage drag/pinch/wheel gestures while writing the world transform back to the scene store.
+- Leave `worldWidth/worldHeight` unset for unbounded pan; rely on lightweight scene offsets only when coordinates drift.
+- Clamp zoom via `clampZoom` to the measured safe window (reference constants in code) so we never exceed float precision.
+- Cursor-anchored zooming remains, but attempts past the cap snap to the limit and surface a UI hint.
 
 ## 6) Spatial Index
 
@@ -100,10 +100,10 @@ Database tables:
 
 ## 8) Performance
 
-- OffscreenCanvas renderer in worker
-- Decode via `createImageBitmap`
-- LRU GPU/CPU caches
-- LOD for image, shape, and text
+- SVG renderer on main thread (DOM/SVG elements)
+- Decode via `createImageBitmap` where available
+- LRU CPU caches and tile reuse
+- LOD for images via tiling; vector text/shapes stay sharp without GPU textures
 
 ## 9) Editing Tools
 
@@ -216,17 +216,23 @@ Root scripts:
 Completion of a milestone means each listed feature set is implemented, measurable tests or demos prove behavior, and no regressions appear in prior milestones.
 
 - M0: Scaffold – Repo and build system exist. You can run pnpm dev and see a blank app in the browser. CI builds pass.
-- M1: Camera/render – The PixiJS canvas renders a grid or test sprites. Pan and zoom work smoothly at 60 fps. No UI, just a moving view.
+- M1: Camera/render – The SVG stage renders a grid/test sprites with custom pointer controls. Infinite pan works smoothly at 60 fps and zoom clamps cleanly at the configured limits. No UI, just the moving view.
 - M2: Scene/selection – You can create, list, and select elements (rectangles or placeholders). Click and marquee selection behave correctly.
 - M3: Transforms – Drag, scale, and rotate selected objects with handles. Undo/redo returns state precisely.
-- M4: Assets/tiles – Uploading images creates visible, zoom-adaptive tiles from the server. Large photos scroll smoothly.
+- M4: Assets/tiles – Uploading images creates visible tiles sized only for the supported zoom window. Large photos scroll smoothly with capped zoom and no tile popping.
 - M5: Shapes – Add and edit vector shapes with fill/stroke. Shape data persists in scene JSON.
-- M6: Text – Add editable text objects using SDF fonts. Text stays crisp when zoomed.
+- M6: Text – Add editable text objects using vector fonts rendered via `<text>`. Text stays crisp when zoomed.
 - M7: Persistence – Save/load projects to backend and IndexedDB. Reopen sessions restores state.
-- M8: Collaboration – Two browser sessions sync via Yjs. Edits and cursors propagate instantly.
-- M9: PWA/offline – App installs and loads offline. Cached tiles and scenes reopen without network
-- M10: Hardening – Performance, accessibility, security, and automated tests meet all acceptance criteria.
-- M11: Mobile polish – Gestures and layout work on phones/tablets. Frame-rate and memory targets achieved.
+- M8: Auth + project entry/share – Users sign up/log in, see their project list, open canvases full-page, exit back to list. View-only links allow unauthenticated viewing without edit controls. Sub-milestones:
+  - M8.1 Auth shell: login/signup/logout pages; `/me` session fetch; auth provider & route guards for edit routes.
+  - M8.2 Project list: `/projects` list with loading/empty/error, “New Canvas” creates and routes to `/projects/:id`.
+  - M8.3 Canvas entry/exit: keep existing full-page canvas; add small overlay “Back to canvases”; ensure project load by ID; autosave in edit mode.
+  - M8.4 View-only mode: `/view/:token` loads scene via share token; disables mutate actions (toolbar, pointer mutations, autosave/undo); shows slim banner “View-only — Sign in to edit”.
+  - M8.5 Share dialog: in project list, button to create/revoke view-only link, copy URL; revocation invalidates prior token.
+- M9: Collaboration – Two browser sessions sync via Yjs. Edits and cursors propagate instantly.
+- M10: PWA/offline – App installs and loads offline. Cached tiles and scenes reopen without network
+- M11: Hardening – Performance, accessibility, security, and automated tests meet all acceptance criteria.
+- M12: Mobile polish – Gestures and layout work on phones/tablets. Frame-rate and memory targets achieved.
   - Gesture tuning, DPR caps, texture limits, UI responsive checks, VKB handling, energy saver mode
 
 ## 19) Commands
@@ -253,7 +259,7 @@ mkdir -p apps && cd apps
 pnpm dlx create-vite@7.2.2 web --template react-ts
 cd web
 pnpm add react@19.2.0 react-dom@19.2.0
-pnpm add pixi.js@8.14.0 gl-matrix@3.4.4 zustand@5.0.8 @tanstack/react-query@5.90.7 rbush@4.0.1 comlink@4.4.2 workbox-build@7.3.0 idb-keyval
+pnpm add gl-matrix@3.4.4 zustand@5.0.8 @tanstack/react-query@5.90.7 rbush@4.0.1 comlink@4.4.2 workbox-build@7.3.0 idb-keyval
 pnpm add -D vite@7.2.2 typescript@5.9.0
 
 # apps/api

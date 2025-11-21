@@ -17,6 +17,7 @@ export interface CreateAssetParams {
   storageKey: string;
   width?: number;
   height?: number;
+  isSvg?: boolean;
 }
 
 export interface RecordVariantParams {
@@ -60,6 +61,7 @@ export class AssetsService {
       storageKey,
       width,
       height,
+      isSvg,
     } = params;
 
     const normalizedProjectId =
@@ -69,19 +71,32 @@ export class AssetsService {
       await this.ensureProject(normalizedProjectId);
     }
 
-    return this.prisma.asset.create({
-      data: {
-        projectId: normalizedProjectId,
-        filename,
-        mimeType,
-        size,
-        checksum,
-        storageKey,
-        width,
-        height,
-        status: AssetStatus.PENDING,
-      },
-    });
+    try {
+      return await this.prisma.asset.create({
+        data: {
+          projectId: normalizedProjectId,
+          filename,
+          mimeType,
+          isSvg: Boolean(isSvg),
+          size,
+          checksum,
+          storageKey,
+          width,
+          height,
+          status: AssetStatus.PENDING,
+        },
+      });
+    } catch (error) {
+      const isDuplicate =
+        error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002';
+      if (isDuplicate) {
+        const existing = await this.prisma.asset.findFirst({
+          where: { checksum, projectId: normalizedProjectId },
+        });
+        if (existing) return existing;
+      }
+      throw error;
+    }
   }
 
   updateAssetStatus(

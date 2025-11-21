@@ -3,6 +3,7 @@
 **/.vite
 **/.turbo
 **/.next
+**/.pnpm-store
 .git
 .gitignore
 Dockerfile*

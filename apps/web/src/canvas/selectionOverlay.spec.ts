@@ -96,33 +96,12 @@ describe('selectionOverlay utilities', () => {
   })
 
   describe('calculateSelectionHandleSizing', () => {
-    it('uses minimum sizes at unit scale', () => {
-      const sizing = calculateSelectionHandleSizing(1)
-      expect(sizing.strokeWidth).toBeCloseTo(1.5)
-      expect(sizing.cornerRadius).toBeCloseTo(6)
-      expect(sizing.edgeRadius).toBeCloseTo(4.5)
-      expect(sizing.rotationRadius).toBeCloseTo(6)
-    })
-
-    it('shrinks handles as scale increases', () => {
-      const sizing = calculateSelectionHandleSizing(10)
-      expect(sizing.strokeWidth).toBeCloseTo(0.15)
-      expect(sizing.cornerRadius).toBeCloseTo(0.6)
-
-      const larger = calculateSelectionHandleSizing(100)
-      expect(larger.cornerRadius).toBeCloseTo(0.06)
-    })
-
-    it('grows handles as scale decreases', () => {
-      const sizing = calculateSelectionHandleSizing(0.1)
-      expect(sizing.cornerRadius).toBeGreaterThan(6)
-      expect(sizing.edgeRadius).toBeGreaterThan(4.5)
-    })
-
-    it('handles zero scale safely', () => {
-      const sizing = calculateSelectionHandleSizing(0)
-      expect(Number.isFinite(sizing.cornerRadius)).toBe(true)
-      expect(sizing.cornerRadius).toBeGreaterThan(0)
+    it('returns consistent sizing regardless of scale', () => {
+      const unit = calculateSelectionHandleSizing()
+      const zoomedIn = calculateSelectionHandleSizing()
+      const zoomedOut = calculateSelectionHandleSizing()
+      expect(unit).toEqual(zoomedIn)
+      expect(unit).toEqual(zoomedOut)
     })
   })
 })

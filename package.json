@@ -7,7 +7,9 @@
     "build": "pnpm -r build",
     "test": "pnpm -r test",
     "lint": "pnpm -r lint",
-    "typecheck": "pnpm -r typecheck"
+    "typecheck": "pnpm -r typecheck",
+    "prisma:generate": "pnpm --filter ./apps/api exec prisma generate",
+    "prisma:push:local": "DATABASE_URL=${DATABASE_URL_LOCAL:-$DATABASE_URL} pnpm --filter ./apps/api exec prisma db push --skip-generate"
   },
   "devDependencies": {
     "@types/node": "22",

@@ -70,32 +70,42 @@ export class StorageService {
   async putObject(options: PutObjectOptions): Promise<StoredObjectMetadata> {
     const key = options.key ?? this.generateKey('uploads', randomUUID());
     if (this.s3Client && this.bucket) {
-      const body =
-        options.body instanceof Readable
-          ? options.body
-          : Readable.from(options.body);
-      const chunks: Buffer[] = [];
-      for await (const chunk of body) {
-        if (Buffer.isBuffer(chunk)) {
-          chunks.push(chunk);
-        } else if (typeof chunk === 'string') {
-          chunks.push(Buffer.from(chunk));
-        } else {
-          chunks.push(Buffer.from(chunk as Uint8Array));
+      try {
+        const body =
+          options.body instanceof Readable
+            ? options.body
+            : Readable.from(options.body);
+        const chunks: Buffer[] = [];
+        for await (const chunk of body) {
+          if (Buffer.isBuffer(chunk)) {
+            chunks.push(chunk);
+          } else if (typeof chunk === 'string') {
+            chunks.push(Buffer.from(chunk));
+          } else {
+            chunks.push(Buffer.from(chunk as Uint8Array));
+          }
         }
+        const buffer = Buffer.concat(chunks);
+        await this.s3Client.send(
+          new PutObjectCommand({
+            Bucket: this.bucket,
+            Key: key,
+            Body: buffer,
+            ContentType: options.contentType,
+          }),
+        );
+        return { key, size: buffer.length, checksum: checksum(buffer) };
+      } catch (error) {
+        this.logger.warn(
+          `S3 upload failed, falling back to local storage: ${(error as Error).message}`,
+        );
       }
-      const buffer = Buffer.concat(chunks);
-      await this.s3Client.send(
-        new PutObjectCommand({
-          Bucket: this.bucket,
-          Key: key,
-          Body: buffer,
-          ContentType: options.contentType,
-        }),
-      );
-      return { key, size: buffer.length, checksum: checksum(buffer) };
     }
 
+    return this.writeLocal(key, options.body);
+  }
+
+  private async writeLocal(key: string, body: Buffer | Readable): Promise<StoredObjectMetadata> {
     if (!this.localDir) {
       throw new Error('No storage backend configured');
     }
@@ -105,15 +115,15 @@ export class StorageService {
     });
     const targetPath = join(this.localDir, key);
     const hash = createHash('sha256');
-    if (options.body instanceof Readable) {
+    if (body instanceof Readable) {
       const writeStream = createWriteStream(targetPath);
-      options.body.on('data', (chunk) => hash.update(chunk as Buffer));
-      await pipeline(options.body, writeStream);
+      body.on('data', (chunk) => hash.update(chunk as Buffer));
+      await pipeline(body, writeStream);
       const stats = await fsPromises.stat(targetPath);
       return { key, size: stats.size, checksum: hash.digest('hex') };
     }
 
-    const buffer = options.body;
+    const buffer = body;
     await fsPromises.writeFile(targetPath, buffer);
     return { key, size: buffer.length, checksum: checksum(buffer) };
   }
