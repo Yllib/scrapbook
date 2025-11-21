@@ -26,6 +26,7 @@ export interface AssetMeta {
   status: AssetStatus
   width?: number | null
   height?: number | null
+  isSvg?: boolean
   variants: AssetVariantMeta[]
   tiles: AssetTileMeta[]
 }
@@ -67,6 +68,25 @@ export interface WaitForAssetOptions {
   timeoutMs?: number
 }
 
+function expectedTileCount(meta: AssetMeta, tileSize = 256): number {
+  const width = meta.width ?? 0
+  const height = meta.height ?? 0
+  if (width <= 0 || height <= 0) return 0
+
+  // Level 0 (full res)
+  const level0Cols = Math.max(1, Math.ceil(width / tileSize))
+  const level0Rows = Math.max(1, Math.ceil(height / tileSize))
+
+  // Level 1 (single low-res level at 4x downscale, matching tiler scale)
+  const SCALE = 4
+  const targetW = Math.max(1, Math.ceil(width / SCALE))
+  const targetH = Math.max(1, Math.ceil(height / SCALE))
+  const level1Cols = Math.max(1, Math.ceil(targetW / tileSize))
+  const level1Rows = Math.max(1, Math.ceil(targetH / tileSize))
+
+  return level0Cols * level0Rows + level1Cols * level1Rows
+}
+
 export async function waitForAssetReady(assetId: string, options: WaitForAssetOptions = {}) {
   const interval = options.intervalMs ?? 1500
   const timeout = options.timeoutMs ?? 60000
@@ -75,9 +95,13 @@ export async function waitForAssetReady(assetId: string, options: WaitForAssetOp
   // eslint-disable-next-line no-constant-condition
   while (true) {
     const meta = await fetchAssetMeta(assetId)
-    const hasTiles = Boolean(meta.tiles?.length)
+    const expectedTiles = expectedTileCount(meta)
+    const hasTiles = typeof expectedTiles === 'number' && expectedTiles > 0
+      ? (meta.tiles?.length ?? 0) >= expectedTiles
+      : Boolean(meta.tiles?.length)
     const hasVariants = Boolean(meta.variants?.length)
-    if (meta.status === 'READY' && hasTiles && hasVariants) {
+    const isSvg = Boolean(meta.isSvg)
+    if (meta.status === 'READY' && (isSvg || (hasTiles && hasVariants))) {
       return meta
     }
     if (meta.status === 'FAILED') {

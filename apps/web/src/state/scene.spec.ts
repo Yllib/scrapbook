@@ -148,6 +148,19 @@ describe('scene store', () => {
     expect(imageNode.image?.maxTileLevel).toBe(0)
   })
 
+  it('marks SVG images while keeping derived layout data', () => {
+    const state = useSceneStore.getState()
+    const svgNode = state.createImageNode({
+      assetId: 'svg-asset',
+      intrinsicSize: { width: 240, height: 120 },
+      isSvg: true,
+    })
+
+    expect(svgNode.image?.isSvg).toBe(true)
+    expect(svgNode.image?.tileLevels?.length).toBe(0)
+    expect(svgNode.image?.grid?.columns).toBeGreaterThan(0)
+  })
+
   it('creates text nodes with defaults', () => {
     const state = useSceneStore.getState()
     const textNode = state.createTextNode()

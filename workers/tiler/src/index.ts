@@ -10,6 +10,7 @@ dotenv.config({ path: path.join(rootDir, '.env') })
 dotenv.config({ path: path.join(rootDir, '.env.local'), override: true })
 
 const TILE_SIZE = 256
+const LOW_RES_DIVISOR = 4 // downscale factor for the single low-res LOD
 
 const config: Config = {
   bucket: process.env.S3_BUCKET ?? null,
@@ -169,13 +170,16 @@ async function generateTiles(assetId: string, source: Buffer, width: number, hei
   }
 
   const maxDimension = Math.max(width, height)
-  const maxLevel = Math.max(0, Math.ceil(Math.log2(maxDimension / TILE_SIZE)))
+  // Only two LODs: full-res (level 0) and one downscaled level for extreme zoom-out.
+  const levels = [0]
+  if (Math.max(width, height) > TILE_SIZE) {
+    levels.push(1)
+  }
 
-  for (let level = 0; level <= maxLevel; level += 1) {
+  for (const level of levels) {
     await generateTilesForLevel(assetId, source, width, height, level)
   }
 }
-
 async function generateTilesForLevel(
   assetId: string,
   source: Buffer,
@@ -183,11 +187,9 @@ async function generateTilesForLevel(
   height: number,
   level: number,
 ) {
-  const scale = 2 ** level
+  const scale = level === 0 ? 1 : LOW_RES_DIVISOR
   const targetWidth = Math.max(1, Math.ceil(width / scale))
   const targetHeight = Math.max(1, Math.ceil(height / scale))
-  const cols = Math.max(1, Math.ceil(targetWidth / TILE_SIZE))
-  const rows = Math.max(1, Math.ceil(targetHeight / TILE_SIZE))
   const quality = Math.max(50, 80 - level * 5)
   const tileSource =
     scale === 1
@@ -199,27 +201,87 @@ async function generateTilesForLevel(
             withoutEnlargement: true,
           })
           .toBuffer()
+
+  const sourceMeta = await sharp(tileSource).metadata()
+  const sourceWidth = Math.max(1, sourceMeta.width ?? targetWidth)
+  const sourceHeight = Math.max(1, sourceMeta.height ?? targetHeight)
+  const cols = Math.max(1, Math.ceil(sourceWidth / TILE_SIZE))
+  const rows = Math.max(1, Math.ceil(sourceHeight / TILE_SIZE))
+
+  const bleed = 2 // replicate 2px from neighboring pixels to avoid visible seams
   const tilePromises: Promise<void>[] = []
 
   for (let y = 0; y < rows; y += 1) {
     for (let x = 0; x < cols; x += 1) {
       const left = x * TILE_SIZE
       const top = y * TILE_SIZE
-      const tileWidth = Math.max(1, Math.min(TILE_SIZE, targetWidth - left))
-      const tileHeight = Math.max(1, Math.min(TILE_SIZE, targetHeight - top))
+      const tileWidth = Math.max(1, Math.min(TILE_SIZE, sourceWidth - left))
+      const tileHeight = Math.max(1, Math.min(TILE_SIZE, sourceHeight - top))
 
-      const tilePromise = sharp(tileSource)
-        .extract({ left, top, width: tileWidth, height: tileHeight })
-        .extend({
-          top: 0,
-          left: 0,
-          right: Math.max(0, TILE_SIZE - tileWidth),
-          bottom: Math.max(0, TILE_SIZE - tileHeight),
-          background: { r: 0, g: 0, b: 0, alpha: 0 },
-        })
-        .webp({ quality })
-        .toBuffer()
-        .then(async (buffer) => {
+      // Expand extraction bounds by bleed on all sides, clamped to the source limits
+      const bleedLeft = Math.min(bleed, left)
+      const bleedTop = Math.min(bleed, top)
+      const bleedRight = Math.min(bleed, Math.max(0, sourceWidth - (left + tileWidth)))
+      const bleedBottom = Math.min(bleed, Math.max(0, sourceHeight - (top + tileHeight)))
+
+      const extractLeft = left - bleedLeft
+      const extractTop = top - bleedTop
+      const extractWidth = tileWidth + bleedLeft + bleedRight
+      const extractHeight = tileHeight + bleedTop + bleedBottom
+      let safeLeft = Math.max(0, extractLeft)
+      let safeTop = Math.max(0, extractTop)
+      let availableX = sourceWidth - safeLeft
+      let availableY = sourceHeight - safeTop
+      if (availableX <= 0) {
+        safeLeft = Math.max(0, sourceWidth - 1)
+        availableX = sourceWidth - safeLeft
+      }
+      if (availableY <= 0) {
+        safeTop = Math.max(0, sourceHeight - 1)
+        availableY = sourceHeight - safeTop
+      }
+      const safeWidth = Math.max(1, Math.min(extractWidth, availableX))
+      const safeHeight = Math.max(1, Math.min(extractHeight, availableY))
+
+      const tilePromise = (async () => {
+        try {
+          const extracted = await sharp(tileSource)
+            .extract({ left: safeLeft, top: safeTop, width: safeWidth, height: safeHeight })
+            .toBuffer()
+
+          const padded = await sharp(extracted)
+            .extend({
+              top: bleed - bleedTop,
+              bottom: bleed - bleedBottom + Math.max(0, TILE_SIZE - tileHeight),
+              left: bleed - bleedLeft,
+              right: bleed - bleedRight + Math.max(0, TILE_SIZE - tileWidth),
+              extendWith: 'copy',
+            })
+            .toBuffer()
+
+          const paddedMeta = await sharp(padded).metadata()
+          const neededWidth = bleed * 2 + TILE_SIZE
+          const neededHeight = bleed * 2 + TILE_SIZE
+          let normalized = padded
+          if ((paddedMeta.width ?? 0) < neededWidth || (paddedMeta.height ?? 0) < neededHeight) {
+            const extraRight = Math.max(0, neededWidth - (paddedMeta.width ?? 0))
+            const extraBottom = Math.max(0, neededHeight - (paddedMeta.height ?? 0))
+            normalized = await sharp(padded)
+              .extend({
+                top: 0,
+                left: 0,
+                right: extraRight,
+                bottom: extraBottom,
+                extendWith: 'copy',
+              })
+              .toBuffer()
+          }
+
+          const buffer = await sharp(normalized)
+            .extract({ left: bleed, top: bleed, width: TILE_SIZE, height: TILE_SIZE })
+            .webp({ quality, lossless: true, alphaQuality: 100 })
+            .toBuffer()
+
           const key = storage.generateKey(`tiles/${assetId}/${level}`, `${x}-${y}.webp`)
           const stored = await storage.putObject({ key, contentType: 'image/webp', body: buffer })
           await prisma.assetTile.create({
@@ -233,7 +295,30 @@ async function generateTilesForLevel(
               storageKey: stored.key,
             },
           })
-        })
+        } catch (error) {
+          console.error('[tiler] tile extract failed', {
+            assetId,
+            level,
+            x,
+            y,
+            sourceWidth,
+            sourceHeight,
+            left,
+            top,
+            tileWidth,
+            tileHeight,
+            bleedLeft,
+            bleedRight,
+            bleedTop,
+            bleedBottom,
+            safeLeft,
+            safeTop,
+            safeWidth,
+            safeHeight,
+          })
+          throw error
+        }
+      })()
 
       tilePromises.push(tilePromise)
     }

@@ -145,6 +145,45 @@ body {
   pointer-events: none;
 }
 
+.stage-context-menu {
+  position: fixed;
+  z-index: 20;
+  background: #0b1220;
+  color: #e2e8f0;
+  border: 1px solid #1f2a44;
+  border-radius: 8px;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.35);
+  padding: 6px;
+  min-width: 180px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.stage-context-menu__item {
+  width: 100%;
+  text-align: left;
+  background: transparent;
+  border: none;
+  color: inherit;
+  padding: 8px 10px;
+  border-radius: 6px;
+  cursor: pointer;
+  font: inherit;
+}
+
+.stage-context-menu__item:hover {
+  background: rgba(59, 130, 246, 0.15);
+}
+
+.stage-context-menu__item--cancel {
+  color: #a0aec0;
+}
+
+.stage-context-menu__item--cancel:hover {
+  background: rgba(255, 255, 255, 0.05);
+}
+
 .svg-stage__node-hit {
   fill: transparent;
   stroke: transparent;

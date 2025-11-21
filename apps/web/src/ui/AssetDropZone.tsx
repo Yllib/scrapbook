@@ -21,14 +21,16 @@ export function AssetDropZone() {
       try {
         const { assetId } = await uploadAsset(file, projectId ?? undefined)
         const meta = await waitForAssetReady(assetId)
+        const isSvg = Boolean(meta.isSvg)
         const intrinsicWidth = meta.width ?? 512
         const intrinsicHeight = meta.height ?? 512
-        const tileLevels = summarizeTileLevels(meta.tiles)
+        const tileLevels = isSvg ? [] : summarizeTileLevels(meta.tiles)
         const maxTileLevel = tileLevels.length > 0 ? tileLevels[tileLevels.length - 1].z : undefined
         createImage(
           {
             assetId,
             intrinsicSize: { width: intrinsicWidth, height: intrinsicHeight },
+            isSvg,
             tileLevels: tileLevels.length > 0 ? tileLevels : undefined,
             maxTileLevel,
           },

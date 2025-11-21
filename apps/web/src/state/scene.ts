@@ -45,6 +45,7 @@ export interface ImageDefinition {
   assetId: string
   intrinsicSize: Size2D
   tileSize?: number
+  isSvg?: boolean
   grid?: {
     columns: number
     rows: number
@@ -111,7 +112,8 @@ const DEFAULT_WORLD_TRANSFORM: WorldTransform = { position: { x: 0, y: 0 }, scal
 
 const DEFAULT_RECT_SIZE: Size2D = { width: 160, height: 120 }
 const HISTORY_LIMIT = 200
-const MIN_NODE_SIZE = 2
+// Minimum node size in world units; keep tiny so resizing still works at extreme zoom-in
+const MIN_NODE_SIZE = 0.01
 const DEFAULT_FILL = '#38bdf8'
 const DEFAULT_STROKE = '#0ea5e9'
 const DEFAULT_TILE_SIZE = 256
@@ -377,6 +379,7 @@ const cloneNode = (node: SceneNode): SceneNode => ({
   image: node.image
     ? {
         assetId: node.image.assetId,
+        isSvg: node.image.isSvg,
         intrinsicSize: { ...node.image.intrinsicSize },
         tileSize: node.image.tileSize,
         grid: node.image.grid ? { ...node.image.grid } : undefined,
@@ -557,20 +560,22 @@ createRectangleNode: (overrides = {}) => {
       width: image.intrinsicSize?.width ?? DEFAULT_RECT_SIZE.width,
       height: image.intrinsicSize?.height ?? DEFAULT_RECT_SIZE.height,
     }
+    const isSvg = Boolean(image.isSvg)
     const tileSize = image.tileSize ?? DEFAULT_TILE_SIZE
-    const normalizedTileLevels = normalizeTileLevels(
-      image.tileLevels ?? deriveSingleLevel(intrinsic.width, intrinsic.height, tileSize),
-    )
+    const normalizedTileLevels = isSvg
+      ? []
+      : normalizeTileLevels(image.tileLevels ?? deriveSingleLevel(intrinsic.width, intrinsic.height, tileSize))
     const zeroLevel = normalizedTileLevels.find((level) => level.z === 0)
-    const grid =
-      image.grid ??
-      (zeroLevel
-        ? { columns: zeroLevel.columns, rows: zeroLevel.rows }
-        : {
-            columns: Math.max(1, Math.ceil(intrinsic.width / tileSize)),
-            rows: Math.max(1, Math.ceil(intrinsic.height / tileSize)),
-          })
-    const maxTileLevel = image.maxTileLevel ?? getMaxTileLevel(normalizedTileLevels)
+    const grid = isSvg
+      ? { columns: 1, rows: 1 }
+      : image.grid ??
+          (zeroLevel
+            ? { columns: zeroLevel.columns, rows: zeroLevel.rows }
+            : {
+                columns: Math.max(1, Math.ceil(intrinsic.width / tileSize)),
+                rows: Math.max(1, Math.ceil(intrinsic.height / tileSize)),
+              })
+    const maxTileLevel = isSvg ? 0 : image.maxTileLevel ?? getMaxTileLevel(normalizedTileLevels)
     const size = overrides.size ?? {
       width: intrinsic.width * factor,
       height: intrinsic.height * factor,
@@ -585,6 +590,7 @@ createRectangleNode: (overrides = {}) => {
       rotation: overrides.rotation ?? 0,
       image: {
         assetId: image.assetId,
+        isSvg,
         intrinsicSize: { ...intrinsic },
         tileSize,
         grid,

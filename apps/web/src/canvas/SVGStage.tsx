@@ -1,8 +1,8 @@
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { ZoomBadge } from '../ui/ZoomBadge'
 import { useSceneStore, type Vec2, type SceneNode, DEFAULT_POLYGON_POINTS } from '../state/scene'
 import { requestConfirmation } from '../state/dialog'
-import { pickTileLevel, maxTileLevel } from '../tiles/tileLevels'
+// import { pickTileLevel } from '../tiles/tileLevels'
 import { API_BASE } from '../api/client'
 import { VIEWPORT_CONFIG } from './viewport/zoomLimits'
 import { ZOOM_EVENT } from './events'
@@ -113,6 +113,79 @@ const getSafeDimension = (value: number, fallback = 1) =>
 const buildTileUrl = (assetId: string, level: number, x: number, y: number) =>
   `${API_BASE}/tiles/${assetId}/${level}/${x}/${y}.webp`
 
+const buildSvgUrl = (assetId: string) => `${API_BASE}/assets/${assetId}/svg`
+
+const svgCache = new Map<
+  string,
+  {
+    fragment: DocumentFragment
+    viewBox: { minX: number; minY: number; width: number; height: number } | null
+    width: number
+    height: number
+  }
+>()
+
+const svgFetches = new Map<string, Promise<void>>()
+
+const sanitizeSvg = (raw: string) => {
+  // Strip scripts and inline event handlers; keep markup otherwise intact
+  const withoutScripts = raw.replace(/<\s*script[\s\S]*?<\s*\/script\s*>/gi, '')
+  const withoutEvents = withoutScripts.replace(/on[a-z]+\s*=\s*"[^"]*"/gi, '')
+  return withoutEvents
+}
+
+const parseSvg = (assetId: string, svgText: string) => {
+  try {
+    const parser = new DOMParser()
+    const doc = parser.parseFromString(svgText, 'image/svg+xml')
+    const svgEl = doc.querySelector('svg')
+    if (!svgEl) return null
+    const viewBoxAttr = svgEl.getAttribute('viewBox')
+    let viewBox: { minX: number; minY: number; width: number; height: number } | null = null
+    if (viewBoxAttr) {
+      const parts = viewBoxAttr.split(/\s+/).map((v) => Number.parseFloat(v))
+      if (parts.length === 4 && parts.every((v) => Number.isFinite(v))) {
+        viewBox = { minX: parts[0], minY: parts[1], width: parts[2], height: parts[3] }
+      }
+    }
+    const widthAttr = Number.parseFloat(svgEl.getAttribute('width') ?? '')
+    const heightAttr = Number.parseFloat(svgEl.getAttribute('height') ?? '')
+    const sourceWidth = Number.isFinite(widthAttr) && widthAttr > 0 ? widthAttr : viewBox?.width ?? 1
+    const sourceHeight = Number.isFinite(heightAttr) && heightAttr > 0 ? heightAttr : viewBox?.height ?? 1
+    const fragment = document.createDocumentFragment()
+    svgEl.childNodes.forEach((node) => {
+      fragment.appendChild(node.cloneNode(true))
+    })
+    svgCache.set(assetId, { fragment, viewBox, width: sourceWidth, height: sourceHeight })
+    return svgCache.get(assetId) ?? null
+  } catch (error) {
+    console.warn('Failed to parse SVG', error)
+    return null
+  }
+}
+
+const ensureSvgCached = (assetId: string, onReady: () => void) => {
+  if (svgCache.has(assetId)) return Promise.resolve()
+  const existing = svgFetches.get(assetId)
+  if (existing) return existing
+  const fetchPromise = fetch(buildSvgUrl(assetId), { mode: 'same-origin', cache: 'force-cache' })
+    .then(async (res) => {
+      if (!res.ok) throw new Error(`SVG fetch failed: ${res.status}`)
+      const text = await res.text()
+      const sanitized = sanitizeSvg(text)
+      parseSvg(assetId, sanitized)
+    })
+    .catch((error) => {
+      console.warn('SVG fetch/parse failed', error)
+    })
+    .finally(() => {
+      svgFetches.delete(assetId)
+      onReady()
+    })
+  svgFetches.set(assetId, fetchPromise)
+  return fetchPromise
+}
+
 const getTileLevelStats = (node: SceneNode, level: number) => {
   const image = node.image
   const tileSize = Math.max(1, image?.tileSize ?? FALLBACK_TILE_SIZE)
@@ -136,27 +209,29 @@ const getTileLevelStats = (node: SceneNode, level: number) => {
 }
 
 // Hardcode to highest-detail tiles for now; revisit level picking after sizing bug is resolved
-const getImageDensity = (node: SceneNode, scale: number) => {
-  const intrinsicWidth = getSafeDimension(node.image?.intrinsicSize.width ?? node.size.width)
-  const intrinsicHeight = getSafeDimension(node.image?.intrinsicSize.height ?? node.size.height)
-  const widthDensity = (getSafeDimension(node.size.width) * scale) / intrinsicWidth
-  const heightDensity = (getSafeDimension(node.size.height) * scale) / intrinsicHeight
-  const density = Math.max(widthDensity, heightDensity)
-  return Number.isFinite(density) && density > 0 ? density : 1
-}
+// const getImageDensity = (node: SceneNode, scale: number) => {
+//   const intrinsicWidth = getSafeDimension(node.image?.intrinsicSize.width ?? node.size.width)
+//   const intrinsicHeight = getSafeDimension(node.image?.intrinsicSize.height ?? node.size.height)
+//   const widthDensity = (getSafeDimension(node.size.width) * scale) / intrinsicWidth
+//   const heightDensity = (getSafeDimension(node.size.height) * scale) / intrinsicHeight
+//   const density = Math.max(widthDensity, heightDensity)
+//   return Number.isFinite(density) && density > 0 ? density : 1
+// }
 
 
 export function SVGStage() {
+  const storeApi = useSceneStore
   const hostRef = useRef<HTMLDivElement | null>(null)
   const svgRef = useRef<SVGSVGElement | null>(null)
   const overlayRef = useRef<HTMLDivElement | null>(null)
+  const [contextMenu, setContextMenu] = useState<{ x: number; y: number; items: { id: string; name: string }[] } | null>(null)
 
   useEffect(() => {
     const host = hostRef.current
     const svg = svgRef.current
     if (!host || !svg) return
 
-    const storeApi = useSceneStore
+    let disposed = false
     let hostBounds = host.getBoundingClientRect()
 
     const gridGroup = createSvgElement('g')
@@ -297,10 +372,42 @@ export function SVGStage() {
       }
       const width = getSafeDimension(node.size.width)
       const height = getSafeDimension(node.size.height)
+
+      if (node.image.isSvg) {
+        const cached = svgCache.get(assetId)
+        if (!cached) {
+          void ensureSvgCached(assetId, () => {
+            if (disposed) return
+            renderScene(lastNodes, selectedIds)
+          })
+          return null
+        }
+        const sourceWidth = getSafeDimension(cached.viewBox?.width ?? cached.width)
+        const sourceHeight = getSafeDimension(cached.viewBox?.height ?? cached.height)
+        const scaleX = sourceWidth > 0 ? width / sourceWidth : 1
+        const scaleY = sourceHeight > 0 ? height / sourceHeight : 1
+        const group = createSvgElement('g')
+        group.classList.add('svg-stage__image', 'svg-stage__image--svg')
+
+        // Position SVG so that its top-left aligns with the node's top-left (node is centered at origin)
+        const container = createSvgElement('g')
+        container.setAttribute('transform', `translate(${-width / 2} ${-height / 2})`)
+
+        const content = createSvgElement('g')
+        const translateX = cached.viewBox ? -cached.viewBox.minX : 0
+        const translateY = cached.viewBox ? -cached.viewBox.minY : 0
+        content.setAttribute('transform', `translate(${translateX} ${translateY}) scale(${scaleX} ${scaleY})`)
+        content.appendChild(cached.fragment.cloneNode(true))
+
+        container.appendChild(content)
+        group.appendChild(container)
+        return group
+      }
+
       const group = createSvgElement('g')
       group.classList.add('svg-stage__image')
-      // Bias sharp: allow only one level drop from max
-      const level = pickTileLevel(node, scale)
+      // Stick to highest-detail tiles for now to avoid LOD mismatches
+      const level = 0
       const stats = getTileLevelStats(node, level)
       const childStats = level > 0 ? getTileLevelStats(node, level - 1) : null
       const parentStats = level < (node.image?.maxTileLevel ?? 0) ? getTileLevelStats(node, level + 1) : null
@@ -320,14 +427,18 @@ export function SVGStage() {
         if (tileWidthPx <= 0) break
           const normalizedLeft = leftPx / stats.levelWidth
           const normalizedTop = topPx / stats.levelHeight
-          // Use full tileSize for layout width/height so padded tiles still cover bounds
-          const normalizedWidth = stats.tileSize / stats.levelWidth
-          const normalizedHeight = stats.tileSize / stats.levelHeight
+          // Size tiles by their actual content, not the nominal tileSize, to avoid stretching padded edges
+          const normalizedWidth = tileWidthPx / stats.levelWidth
+          const normalizedHeight = tileHeightPx / stats.levelHeight
+          // Slightly overlap neighbors (≈0.5 screen px) to hide any remaining subpixel seams
+          const overlapWorld = 0.5 / Math.max(scale, Number.EPSILON)
+          const expandX = overlapWorld * 2
+          const expandY = overlapWorld * 2
           const tileElement = createSvgElement('image')
-          tileElement.setAttribute('x', (-halfWidth + normalizedLeft * width).toString())
-          tileElement.setAttribute('y', (-halfHeight + normalizedTop * height).toString())
-          tileElement.setAttribute('width', (normalizedWidth * width).toString())
-          tileElement.setAttribute('height', (normalizedHeight * height).toString())
+          tileElement.setAttribute('x', (-halfWidth + normalizedLeft * width - overlapWorld).toString())
+          tileElement.setAttribute('y', (-halfHeight + normalizedTop * height - overlapWorld).toString())
+          tileElement.setAttribute('width', (normalizedWidth * width + expandX).toString())
+          tileElement.setAttribute('height', (normalizedHeight * height + expandY).toString())
           tileElement.setAttribute('preserveAspectRatio', 'none')
           tileElement.setAttribute('data-tile', `${level}:${x},${y}`)
           tileElement.setAttribute('shape-rendering', 'optimizeQuality')
@@ -549,8 +660,11 @@ export function SVGStage() {
         selectionGroup.appendChild(circle)
       })
 
-      const rotationHandleWorld = toPathPoint(overlay.rotationHandle)
+      // Keep rotation handle offset roughly 40 screen px regardless of zoom
+      const desiredRotationOffsetPx = 40
+      const offsetWorld = desiredRotationOffsetPx / safeScale
       const rotationArmStart = toPathPoint({ x: 0, y: -overlay.height / 2 })
+      const rotationHandleWorld = toPathPoint({ x: 0, y: -overlay.height / 2 - offsetWorld })
       const rotationArm = createSvgElement('line')
       rotationArm.setAttribute('x1', rotationArmStart.x.toString())
       rotationArm.setAttribute('y1', rotationArmStart.y.toString())
@@ -592,9 +706,13 @@ export function SVGStage() {
         }
       }
 
-      const rotationScreen = toScreenFromLocal(overlay.rotationHandle)
+      const safeScale = Math.max(scale, Number.EPSILON)
+      const desiredRotationOffsetPx = 40
+      const offsetWorld = desiredRotationOffsetPx / safeScale
+      const rotationHandleWorld = toWorld(overlay, { x: 0, y: -overlay.height / 2 - offsetWorld })
+      const rotationScreen = worldToScreen(rotationHandleWorld)
       if (distance(pointerScreen, rotationScreen) <= rotationThreshold) {
-        return { kind: 'rotate', position: overlay.rotationHandle }
+        return { kind: 'rotate', position: rotationHandleWorld }
       }
 
       return null
@@ -679,14 +797,16 @@ export function SVGStage() {
 
     renderScene(lastNodes, selectedIds)
 
-    const renderGrid = () => {
+    let lastGridScale = Number.NaN
+    let lastGridSpacing = Number.NaN
+
+    const renderGrid = (force = false) => {
       if (!gridVisible) {
         gridGroup.style.display = 'none'
         clearChildren(gridGroup)
         return
       }
       gridGroup.style.display = ''
-      clearChildren(gridGroup)
       const { width, height } = getViewportSize()
       if (width <= 0 || height <= 0) return
       const safeScale = Math.max(scale, Number.EPSILON)
@@ -718,6 +838,14 @@ export function SVGStage() {
       }
       normalizeSpacing()
       adjustForMaxLines()
+
+      if (!force && Math.abs(safeScale - lastGridScale) < 1e-3 && Math.abs(spacing - lastGridSpacing) < 1e-3) {
+        return
+      }
+
+      clearChildren(gridGroup)
+      lastGridScale = safeScale
+      lastGridSpacing = spacing
       const spacingPx = spacing / worldPerPixel
       const minX = Math.floor(rawMinX / spacing) * spacing
       const maxX = Math.ceil(rawMaxX / spacing) * spacing
@@ -806,8 +934,8 @@ export function SVGStage() {
       originCrossY.setAttribute('stroke-width', crossWidth.toString())
     }
 
-    const renderGuides = () => {
-      renderGrid()
+    const renderGuides = (forceGrid = false) => {
+      renderGrid(forceGrid)
       updateOriginMarker()
     }
 
@@ -818,25 +946,36 @@ export function SVGStage() {
       translation = { x: width / 2, y: height / 2 }
     }
 
+    let pendingFrame = 0
     const applyTransform = () => {
-      svg.style.transform = `translate(${translation.x}px, ${translation.y}px) scale(${scale})`
-      renderGuides()
-      renderOverlays()
-      if (Math.abs(scale - lastRenderedScale) > 1e-4) {
-        renderScene(lastNodes, selectedIds)
+      const run = () => {
+        pendingFrame = 0
+        svg.style.transform = `translate(${translation.x}px, ${translation.y}px) scale(${scale})`
+        renderGuides()
+        renderOverlays()
+        if (Math.abs(scale - lastRenderedScale) > 1e-4) {
+          renderScene(lastNodes, selectedIds)
+        }
       }
+      if (pendingFrame) return
+      pendingFrame = requestAnimationFrame(run)
     }
 
     applyTransform()
 
     let syncingWorld = false
+    let pendingWorldFrame = 0
     const syncWorldState = () => {
-      syncingWorld = true
-      try {
-        storeApi.getState().updateWorldTransform({ position: { ...translation }, scale })
-      } finally {
-        syncingWorld = false
-      }
+      if (pendingWorldFrame) return
+      pendingWorldFrame = requestAnimationFrame(() => {
+        pendingWorldFrame = 0
+        syncingWorld = true
+        try {
+          storeApi.getState().updateWorldTransform({ position: { ...translation }, scale })
+        } finally {
+          syncingWorld = false
+        }
+      })
     }
 
     syncWorldState()
@@ -886,10 +1025,48 @@ export function SVGStage() {
       spacePressed: false,
     }
 
-    const capturePointer = (event: PointerEvent) => {
-      if (event.pointerType !== 'touch') {
-        host.setPointerCapture?.(event.pointerId)
+    let transformQueueFrame = 0
+    let transformQueue = {
+      translate: { x: 0, y: 0 },
+      scale: null as { center: Vec2; scaleX: number; scaleY: number } | null,
+      rotate: null as { center: Vec2; delta: number } | null,
+    }
+
+    const flushTransformQueue = () => {
+      transformQueueFrame = 0
+      const queue = transformQueue
+      transformQueue = {
+        translate: { x: 0, y: 0 },
+        scale: null,
+        rotate: null,
       }
+      const state = storeApi.getState()
+      if (queue.translate.x !== 0 || queue.translate.y !== 0) {
+        state.translateSelected(queue.translate, { record: false })
+      }
+      if (queue.scale) {
+        state.scaleSelected(queue.scale.center, queue.scale.scaleX, queue.scale.scaleY, { record: false })
+      }
+      if (queue.rotate) {
+        state.rotateSelected(queue.rotate.center, queue.rotate.delta, { record: false })
+      }
+    }
+
+    const scheduleTransformFlush = () => {
+      if (transformQueueFrame) return
+      transformQueueFrame = requestAnimationFrame(flushTransformQueue)
+    }
+
+    const forceFlushTransformQueue = () => {
+      if (transformQueueFrame) {
+        cancelAnimationFrame(transformQueueFrame)
+        transformQueueFrame = 0
+      }
+      flushTransformQueue()
+    }
+
+    const capturePointer = (event: PointerEvent) => {
+      host.setPointerCapture?.(event.pointerId)
     }
 
     const releasePointer = (pointerId: number) => {
@@ -933,18 +1110,28 @@ export function SVGStage() {
       }
     }
 
-    const findNodeTarget = (event: PointerEvent): { id: string; type: string | undefined } | null => {
-      const path = event.composedPath?.() ?? []
-      for (const entry of path) {
-        if (!(entry instanceof Element)) continue
-        if ('nodeType' in entry && entry instanceof SVGElement) {
-          const nodeId = entry.dataset.nodeId
-          if (nodeId) {
-            return { id: nodeId, type: entry.dataset.nodeType }
-          }
+    const isPointInsideNode = (node: SceneNode, worldPoint: Vec2) => {
+      const dx = worldPoint.x - node.position.x
+      const dy = worldPoint.y - node.position.y
+      const cos = Math.cos(-node.rotation)
+      const sin = Math.sin(-node.rotation)
+      const localX = dx * cos - dy * sin
+      const localY = dx * sin + dy * cos
+      const halfW = node.size.width / 2
+      const halfH = node.size.height / 2
+      return Math.abs(localX) <= halfW && Math.abs(localY) <= halfH
+    }
+
+    const pickNodesAtScreenPoint = (screenPoint: Vec2): SceneNode[] => {
+      const worldPoint = screenToWorld(screenPoint)
+      const hits: SceneNode[] = []
+      for (let i = lastNodes.length - 1; i >= 0; i -= 1) {
+        const node = lastNodes[i]
+        if (isPointInsideNode(node, worldPoint)) {
+          hits.push(node)
         }
       }
-      return null
+      return hits
     }
 
     const selectNode = (nodeId: string, additive: boolean, toggle: boolean) => {
@@ -1053,6 +1240,7 @@ export function SVGStage() {
     }
 
     const finishTransformSession = () => {
+      forceFlushTransformQueue()
       if (pointerState.mode === 'translate' || pointerState.mode === 'scale' || pointerState.mode === 'rotate') {
         storeApi.getState().commitTransformSession()
       }
@@ -1140,8 +1328,21 @@ export function SVGStage() {
       pointerState.mode = 'idle'
     }
 
+    let lastContextDown: { time: number; x: number; y: number } | null = null
+
     const handlePointerDown = (event: PointerEvent) => {
-      if (event.button !== 0 && event.button !== 1 && event.button !== 2) return
+      if (contextMenu) {
+        setContextMenu(null)
+      }
+      const isMouse = event.pointerType === 'mouse'
+      if (isMouse && event.button !== 0 && event.button !== 1 && event.button !== 2) return
+      if (!isMouse && event.button === -1) {
+        // normalize touch/pen buttons so we still handle taps/drags
+        ;(event as any).button = 0
+      }
+      if (event.button === 2) {
+        lastContextDown = { time: Date.now(), x: event.clientX, y: event.clientY }
+      }
       if (event.pointerType === 'touch') {
         updateTouchPointer(event)
         if (pointerState.mode === 'touch') {
@@ -1174,14 +1375,16 @@ export function SVGStage() {
           return
         }
       }
-      const nodeTarget = findNodeTarget(event)
       const toggle = event.metaKey || event.ctrlKey
       const additive = event.shiftKey
-      if (nodeTarget && event.button === 0 && !keyboard.spacePressed) {
-        const alreadySelected = selectedIds.has(nodeTarget.id)
+      const hits = pickNodesAtScreenPoint(hostPoint)
+      const topHit = hits.find((node) => !node.locked)
+      const isPrimary = event.button === 0 || event.pointerType === 'touch'
+      if (topHit && isPrimary && !keyboard.spacePressed) {
+        const alreadySelected = selectedIds.has(topHit.id)
         if (!alreadySelected || toggle || additive) {
           event.preventDefault()
-          selectNode(nodeTarget.id, additive, toggle)
+          selectNode(topHit.id, additive, toggle)
           return
         }
         if (!viewOnly) {
@@ -1189,7 +1392,7 @@ export function SVGStage() {
         }
         return
       }
-      const shouldPan = event.button !== 0 || keyboard.spacePressed
+      const shouldPan = (!isPrimary && event.pointerType !== 'touch') || keyboard.spacePressed || event.button === 2
       if (shouldPan) {
         startPan(event)
         return
@@ -1214,7 +1417,11 @@ export function SVGStage() {
         const delta = { x: worldPoint.x - pointerState.lastWorld.x, y: worldPoint.y - pointerState.lastWorld.y }
         pointerState.lastWorld = worldPoint
         if (Math.abs(delta.x) > 0 || Math.abs(delta.y) > 0) {
-          storeApi.getState().translateSelected(delta, { record: false })
+          transformQueue.translate = {
+            x: transformQueue.translate.x + delta.x,
+            y: transformQueue.translate.y + delta.y,
+          }
+          scheduleTransformFlush()
         }
         return
       }
@@ -1245,7 +1452,12 @@ export function SVGStage() {
         if (!Number.isFinite(deltaScaleY) || deltaScaleY <= 0) deltaScaleY = 1
         pointerState.scaleLastAbsolute = { x: absScaleX, y: absScaleY }
         if (Math.abs(deltaScaleX - 1) > 1e-4 || Math.abs(deltaScaleY - 1) > 1e-4) {
-          storeApi.getState().scaleSelected(overlaySnapshot.center, absScaleX, absScaleY, { record: false })
+          transformQueue.scale = {
+            center: overlaySnapshot.center,
+            scaleX: absScaleX,
+            scaleY: absScaleY,
+          }
+          scheduleTransformFlush()
         }
         return
       }
@@ -1259,8 +1471,12 @@ export function SVGStage() {
         let delta = currentAngle - pointerState.rotateLastAngle
         if (!Number.isFinite(delta)) delta = 0
         if (Math.abs(delta) > 1e-4) {
-          storeApi.getState().rotateSelected(overlaySnapshot.center, delta, { record: false })
+          transformQueue.rotate = {
+            center: overlaySnapshot.center,
+            delta: (transformQueue.rotate?.delta ?? 0) + delta,
+          }
           pointerState.rotateLastAngle = currentAngle
+          scheduleTransformFlush()
         }
         return
       }
@@ -1289,6 +1505,9 @@ export function SVGStage() {
           }
           return
         }
+      }
+      if (contextMenu) {
+        setContextMenu(null)
       }
       if (event.pointerId !== pointerState.pointerId) return
       if (pointerState.mode === 'marquee') {
@@ -1383,7 +1602,7 @@ export function SVGStage() {
     const unsubscribeShowGrid = useSceneStore.subscribe((state) => {
       if (state.showGrid === gridVisible) return
       gridVisible = state.showGrid
-      renderGrid()
+      renderGrid(true)
     })
 
     const unsubscribeShowOrigin = useSceneStore.subscribe((state) => {
@@ -1438,16 +1657,51 @@ export function SVGStage() {
       }
     }
 
+    const handleContextMenu = (event: MouseEvent) => {
+      event.preventDefault()
+      setContextMenu(null)
+      const tooLong = lastContextDown && Date.now() - lastContextDown.time > 100
+      const dist = lastContextDown
+        ? Math.hypot(event.clientX - lastContextDown.x, event.clientY - lastContextDown.y)
+        : 0
+      if (tooLong || dist > 4) {
+        return
+      }
+      const hostPoint = getHostPoint(event as unknown as PointerEvent)
+      const hits = pickNodesAtScreenPoint(hostPoint)
+      const locked = hits.filter((n) => n.locked)
+      if (locked.length === 0) {
+        setContextMenu(null)
+        return
+      }
+      const items = locked.map((node) => ({ id: node.id, name: node.name ?? 'Locked item' }))
+      setContextMenu({ x: event.clientX, y: event.clientY, items })
+    }
+
+    const dismissContextMenu = (event?: Event) => {
+      const target = event?.target
+      if (target instanceof HTMLElement && target.closest('.stage-context-menu')) {
+        return
+      }
+      setContextMenu(null)
+    }
+
+    host.addEventListener('contextmenu', handleContextMenu)
     host.addEventListener('pointerdown', handlePointerDown)
     host.addEventListener('pointermove', handlePointerMove)
     host.addEventListener('pointerup', handlePointerUp)
     host.addEventListener('pointercancel', handlePointerCancel)
     host.addEventListener('wheel', handleWheel, { passive: false })
+    window.addEventListener('pointerup', handlePointerUp, true)
+    window.addEventListener('pointercancel', handlePointerCancel, true)
+    window.addEventListener('pointerdown', dismissContextMenu, true)
+    window.addEventListener('scroll', dismissContextMenu, true)
     window.addEventListener(ZOOM_EVENT, handleZoomEvent as EventListener)
     window.addEventListener('keydown', handleKeyDown)
     window.addEventListener('keyup', handleKeyUp)
 
     return () => {
+      disposed = true
       unsubscribeWorld()
       unsubscribeNodes()
       unsubscribeSelection()
@@ -1463,11 +1717,16 @@ export function SVGStage() {
       originGroup.remove()
       touchPointers.clear()
       pinchState = null
+      host.removeEventListener('contextmenu', handleContextMenu)
       host.removeEventListener('pointerdown', handlePointerDown)
       host.removeEventListener('pointermove', handlePointerMove)
       host.removeEventListener('pointerup', handlePointerUp)
       host.removeEventListener('pointercancel', handlePointerCancel)
       host.removeEventListener('wheel', handleWheel)
+      window.removeEventListener('pointerup', handlePointerUp, true)
+      window.removeEventListener('pointercancel', handlePointerCancel, true)
+      window.removeEventListener('pointerdown', dismissContextMenu, true)
+      window.removeEventListener('scroll', dismissContextMenu, true)
       window.removeEventListener(ZOOM_EVENT, handleZoomEvent as EventListener)
       window.removeEventListener('keydown', handleKeyDown)
       window.removeEventListener('keyup', handleKeyUp)
@@ -1485,6 +1744,46 @@ export function SVGStage() {
           xmlns="http://www.w3.org/2000/svg"
         />
         <div ref={overlayRef} className="svg-stage__overlay" aria-hidden="true" />
+        {contextMenu ? (
+          <div
+            className="stage-context-menu"
+            style={{ left: contextMenu.x, top: contextMenu.y }}
+            role="menu"
+            onPointerDownCapture={(event) => {
+              event.stopPropagation()
+              event.preventDefault()
+            }}
+            onPointerDown={(event) => {
+              event.stopPropagation()
+              event.preventDefault()
+            }}
+          >
+            {contextMenu.items.map((item) => (
+              <button
+                key={item.id}
+                type="button"
+                className="stage-context-menu__item"
+                onClick={(event) => {
+                  event.stopPropagation()
+                  event.preventDefault()
+                  const state = storeApi.getState()
+                  state.unlockNodes([item.id])
+                  state.setSelection([item.id])
+                  setContextMenu(null)
+                }}
+              >
+                Unlock {item.name}
+              </button>
+            ))}
+            <button
+              type="button"
+              className="stage-context-menu__item stage-context-menu__item--cancel"
+              onClick={() => setContextMenu(null)}
+            >
+              Cancel
+            </button>
+          </div>
+        ) : null}
       </div>
       <ZoomBadge />
     </>
