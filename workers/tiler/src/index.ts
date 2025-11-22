@@ -105,7 +105,9 @@ async function processAsset(assetId: string, payload: OperationPayload) {
 
   await generateVariants(assetId, buffer, metadata.width ?? 0, metadata.height ?? 0)
   await generateTiles(assetId, buffer, metadata.width ?? 0, metadata.height ?? 0)
+  await verifyTileAvailability(assetId)
 
+  // Only mark READY after all tiles are written and reachable
   await prisma.asset.update({
     where: { id: assetId },
     data: {
@@ -333,6 +335,23 @@ async function generateTilesForLevel(
   }
 
   await Promise.all(tilePromises)
+}
+
+async function verifyTileAvailability(assetId: string) {
+  const tiles = await prisma.assetTile.findMany({ where: { assetId }, select: { z: true, x: true, y: true, storageKey: true } })
+  if (!tiles.length) return
+  const checks: Promise<void>[] = []
+  for (const tile of tiles) {
+    const p = (async () => {
+      const exists = await storage.exists(tile.storageKey)
+      if (!exists) {
+        throw new Error(`Tile not yet readable: ${tile.z}/${tile.x}/${tile.y}`)
+      }
+    })()
+    checks.push(p)
+  }
+  // Allow a modest number of parallel head checks
+  await Promise.all(checks)
 }
 
 async function main() {

@@ -196,12 +196,8 @@ const ensureSvgCached = (assetId: string, onReady: () => void) => {
   return fetchPromise
 }
 
-const getImageDensity = (node: SceneNode, scale: number) => {
-  const intrinsicWidth = getSafeDimension(node.image?.intrinsicSize.width ?? node.size.width)
-  const intrinsicHeight = getSafeDimension(node.image?.intrinsicSize.height ?? node.size.height)
-  const widthDensity = (getSafeDimension(node.size.width) * scale) / intrinsicWidth
-  const heightDensity = (getSafeDimension(node.size.height) * scale) / intrinsicHeight
-  const density = Math.max(widthDensity, heightDensity)
+const getImageDensity = (_node: SceneNode, scale: number) => {
+  const density = Math.abs(scale)
   return Number.isFinite(density) && density > 0 ? density : 1
 }
 
