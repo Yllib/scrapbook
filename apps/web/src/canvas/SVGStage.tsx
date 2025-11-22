@@ -55,6 +55,9 @@ const MIN_IMAGE_SCREEN_PX = 1
 const IMAGE_CULL_SCALE_THRESHOLD = 10000
 const LOD_UPGRADE_FACTOR = 1.2
 const LOD_DOWNGRADE_FACTOR = 0.8
+// Positive values choose higher-detail levels sooner; tweak to taste
+const LOD_BIAS = 3
+const PREFETCH_MAX_TILES = 64
 
 const lastTileLevelByNode = new Map<string, number>()
 
@@ -248,6 +251,25 @@ const getTileLevelStats = (node: SceneNode, level: number) => {
     columns,
     rows,
     level: safeLevel,
+  }
+}
+
+const prefetchViewportLevel = (assetId: string, stats: ReturnType<typeof getTileLevelStats>) => {
+  const { columns, rows, level } = stats
+  if (columns <= 0 || rows <= 0) return
+  const maxTiles = Math.min(PREFETCH_MAX_TILES, columns * rows)
+  const span = Math.max(1, Math.round(Math.sqrt(maxTiles)))
+  const cx = Math.floor(columns / 2)
+  const cy = Math.floor(rows / 2)
+  const half = Math.floor(span / 2)
+  const minX = Math.max(0, cx - half)
+  const maxX = Math.min(columns - 1, cx + half)
+  const minY = Math.max(0, cy - half)
+  const maxY = Math.min(rows - 1, cy + half)
+  for (let y = minY; y <= maxY; y += 1) {
+    for (let x = minX; x <= maxX; x += 1) {
+      void prefetchTile(assetId, level, x, y)
+    }
   }
 }
 
@@ -470,7 +492,7 @@ export function SVGStage() {
 
       const density = getImageDensity(node, scale)
       const maxLevel = node.image?.maxTileLevel ?? 0
-      const desiredLevel = pickTileLevel(Math.log2(density), maxLevel)
+      const desiredLevel = pickTileLevel(Math.log2(density) + LOD_BIAS, maxLevel)
       const level = pickLevelWithHysteresis(node.id, desiredLevel, density)
       const stats = getTileLevelStats(node, level)
       const childStats = level > 0 ? getTileLevelStats(node, level - 1) : null
@@ -478,6 +500,10 @@ export function SVGStage() {
       group.dataset.tileLevel = level.toString()
       const halfWidth = width / 2
       const halfHeight = height / 2
+
+      // Prefetch adjacent LODs covering the central viewport region to reduce pop-in
+      if (childStats) prefetchViewportLevel(assetId, childStats)
+      if (parentStats) prefetchViewportLevel(assetId, parentStats)
 
       const clipId = `clip-${node.id}`
       const defs = svg.querySelector('defs') ?? svg.appendChild(createSvgElement('defs'))
