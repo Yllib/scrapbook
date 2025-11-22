@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { ZoomBadge } from '../ui/ZoomBadge'
 import { useSceneStore, type Vec2, type SceneNode, DEFAULT_POLYGON_POINTS } from '../state/scene'
 import { requestConfirmation } from '../state/dialog'
-// import { pickTileLevel } from '../tiles/tileLevels'
+import { pickTileLevel, MIN_TILE_PIXEL_DENSITY } from '../tiles/tileLevels'
 import { API_BASE } from '../api/client'
 import { VIEWPORT_CONFIG } from './viewport/zoomLimits'
 import { ZOOM_EVENT } from './events'
@@ -50,6 +50,13 @@ const MAX_TEXT_DOM_FONT_SIZE = 4096
 const XLINK_NS = 'http://www.w3.org/1999/xlink'
 const FALLBACK_TILE_SIZE = 256
 const prefetchedTiles = new Set<string>()
+// Cull only when projected size is truly sub-pixel (~1px)
+const MIN_IMAGE_SCREEN_PX = 1
+const IMAGE_CULL_SCALE_THRESHOLD = 10000
+const LOD_UPGRADE_FACTOR = 1.2
+const LOD_DOWNGRADE_FACTOR = 0.8
+
+const lastTileLevelByNode = new Map<string, number>()
 
 const cachesAvailable = typeof window !== 'undefined' && typeof caches !== 'undefined'
 
@@ -184,6 +191,42 @@ const ensureSvgCached = (assetId: string, onReady: () => void) => {
     })
   svgFetches.set(assetId, fetchPromise)
   return fetchPromise
+}
+
+const getImageDensity = (node: SceneNode, scale: number) => {
+  const intrinsicWidth = getSafeDimension(node.image?.intrinsicSize.width ?? node.size.width)
+  const intrinsicHeight = getSafeDimension(node.image?.intrinsicSize.height ?? node.size.height)
+  const widthDensity = (getSafeDimension(node.size.width) * scale) / intrinsicWidth
+  const heightDensity = (getSafeDimension(node.size.height) * scale) / intrinsicHeight
+  const density = Math.max(widthDensity, heightDensity)
+  return Number.isFinite(density) && density > 0 ? density : 1
+}
+
+const pickLevelWithHysteresis = (nodeId: string, desired: number, density: number) => {
+  const previous = lastTileLevelByNode.get(nodeId)
+  if (previous === undefined) {
+    lastTileLevelByNode.set(nodeId, desired)
+    return desired
+  }
+
+  // When zooming in (density rising) wait until we are comfortably above the threshold before upgrading
+  if (desired < previous) {
+    const upgradeThreshold = MIN_TILE_PIXEL_DENSITY * LOD_UPGRADE_FACTOR
+    if (density < upgradeThreshold) {
+      return previous
+    }
+  }
+
+  // When zooming out (density falling) wait until we are comfortably below before downgrading
+  if (desired > previous) {
+    const downgradeThreshold = MIN_TILE_PIXEL_DENSITY * LOD_DOWNGRADE_FACTOR
+    if (density > downgradeThreshold) {
+      return previous
+    }
+  }
+
+  lastTileLevelByNode.set(nodeId, desired)
+  return desired
 }
 
 const getTileLevelStats = (node: SceneNode, level: number) => {
@@ -362,7 +405,11 @@ export function SVGStage() {
       return rect
     }
 
-    const createImageElement = (node: SceneNode): SVGElement | null => {
+      const createImageElement = (
+        node: SceneNode,
+        usedTiles: Set<string>,
+        tileCache: Map<string, SVGImageElement>,
+      ): SVGElement | null => {
       if (node.type !== 'image' || !node.image) {
         return null
       }
@@ -404,16 +451,53 @@ export function SVGStage() {
         return group
       }
 
+      // Cull images that are effectively sub-pixel on screen when zoomed far out
+      const screenWidth = width * scale
+      const screenHeight = height * scale
+      if (screenWidth < MIN_IMAGE_SCREEN_PX && screenHeight < MIN_IMAGE_SCREEN_PX) {
+        // Keep cached tiles alive so they are ready when zooming back in
+        const assetPrefix = `${assetId}:`
+        for (const key of tileCache.keys()) {
+          if (key.startsWith(assetPrefix)) {
+            usedTiles.add(key)
+          }
+        }
+        return null
+      }
+
       const group = createSvgElement('g')
       group.classList.add('svg-stage__image')
-      // Stick to highest-detail tiles for now to avoid LOD mismatches
-      const level = 0
+
+      const density = getImageDensity(node, scale)
+      const maxLevel = node.image?.maxTileLevel ?? 0
+      const desiredLevel = pickTileLevel(Math.log2(density), maxLevel)
+      const level = pickLevelWithHysteresis(node.id, desiredLevel, density)
       const stats = getTileLevelStats(node, level)
       const childStats = level > 0 ? getTileLevelStats(node, level - 1) : null
       const parentStats = level < (node.image?.maxTileLevel ?? 0) ? getTileLevelStats(node, level + 1) : null
       group.dataset.tileLevel = level.toString()
       const halfWidth = width / 2
       const halfHeight = height / 2
+
+      const clipId = `clip-${node.id}`
+      const defs = svg.querySelector('defs') ?? svg.appendChild(createSvgElement('defs'))
+      let clip = defs.querySelector<SVGClipPathElement>(`#${clipId}`)
+      if (!clip) {
+        clip = createSvgElement('clipPath')
+        clip.id = clipId
+        defs.appendChild(clip)
+      }
+      // Update clip rect to the node bounds so tiles never paint outside
+      let clipRect = clip.querySelector<SVGRectElement>('rect')
+      if (!clipRect) {
+        clipRect = createSvgElement('rect')
+        clip.appendChild(clipRect)
+      }
+      clipRect.setAttribute('x', (-halfWidth).toString())
+      clipRect.setAttribute('y', (-halfHeight).toString())
+      clipRect.setAttribute('width', width.toString())
+      clipRect.setAttribute('height', height.toString())
+      group.setAttribute('clip-path', `url(#${clipId})`)
 
       let topPx = 0
       let y = 0
@@ -427,23 +511,30 @@ export function SVGStage() {
         if (tileWidthPx <= 0) break
           const normalizedLeft = leftPx / stats.levelWidth
           const normalizedTop = topPx / stats.levelHeight
-          // Size tiles by their actual content, not the nominal tileSize, to avoid stretching padded edges
+          // Size tiles by their actual content; compensate for padded edge tiles so content fills the intended area
           const normalizedWidth = tileWidthPx / stats.levelWidth
           const normalizedHeight = tileHeightPx / stats.levelHeight
-          // Slightly overlap neighbors (≈0.5 screen px) to hide any remaining subpixel seams
-          const overlapWorld = 0.5 / Math.max(scale, Number.EPSILON)
+          // Reduce overlap when very tiny to avoid inflating apparent size
+          const baseOverlapPx = 0.5
+          const overlapScreenPx = screenWidth < 4 && screenHeight < 4 ? 0 : baseOverlapPx
+          const overlapWorld = overlapScreenPx / Math.max(scale, Number.EPSILON)
           const expandX = overlapWorld * 2
           const expandY = overlapWorld * 2
-          const tileElement = createSvgElement('image')
+          const tileKey = `${assetId}:${level}:${x}:${y}`
+          usedTiles.add(tileKey)
+          const tileUrl = buildTileUrl(assetId, stats.level, x, y)
+          const tileElement = tileCache.get(tileKey) ?? createSvgElement('image')
+          const contentScaleX = stats.tileSize / Math.max(1, tileWidthPx)
+          const contentScaleY = stats.tileSize / Math.max(1, tileHeightPx)
           tileElement.setAttribute('x', (-halfWidth + normalizedLeft * width - overlapWorld).toString())
           tileElement.setAttribute('y', (-halfHeight + normalizedTop * height - overlapWorld).toString())
-          tileElement.setAttribute('width', (normalizedWidth * width + expandX).toString())
-          tileElement.setAttribute('height', (normalizedHeight * height + expandY).toString())
+          tileElement.setAttribute('width', (normalizedWidth * width * contentScaleX + expandX).toString())
+          tileElement.setAttribute('height', (normalizedHeight * height * contentScaleY + expandY).toString())
           tileElement.setAttribute('preserveAspectRatio', 'none')
           tileElement.setAttribute('data-tile', `${level}:${x},${y}`)
           tileElement.setAttribute('shape-rendering', 'optimizeQuality')
-          const tileUrl = buildTileUrl(assetId, stats.level, x, y)
           tileElement.setAttributeNS(XLINK_NS, 'href', tileUrl)
+          tileCache.set(tileKey, tileElement)
           group.appendChild(tileElement)
 
           if (childStats && childStats.columns > 0 && childStats.rows > 0) {
@@ -544,12 +635,12 @@ export function SVGStage() {
       return textElement
     }
 
-    const createNodeBody = (node: SceneNode) => {
+    const createNodeBody = (node: SceneNode, usedTiles: Set<string>, tileCache: Map<string, SVGImageElement>) => {
       if (node.type === 'shape') {
         return createShapeElement(node)
       }
       if (node.type === 'image') {
-        return createImageElement(node)
+        return createImageElement(node, usedTiles, tileCache)
       }
       if (node.type === 'text') {
         return createTextElement(node)
@@ -578,8 +669,13 @@ export function SVGStage() {
       return hitTarget
     }
 
-    const createNodeElement = (node: SceneNode, isSelected: boolean) => {
-      const body = createNodeBody(node)
+    const createNodeElement = (
+      node: SceneNode,
+      isSelected: boolean,
+      usedTiles: Set<string>,
+      tileCache: Map<string, SVGImageElement>,
+    ) => {
+      const body = createNodeBody(node, usedTiles, tileCache)
       if (!body) return null
       const group = createSvgElement('g')
       group.classList.add('svg-stage__node')
@@ -597,14 +693,23 @@ export function SVGStage() {
       return group
     }
 
+    const tileCache = new Map<string, SVGImageElement>()
+
     const renderNodes = (nodes: SceneNode[], selection: Set<string>) => {
       clearChildren(nodesGroup)
+      const usedTiles = new Set<string>()
       nodes.forEach((node) => {
-        const element = createNodeElement(node, selection.has(node.id))
+        const element = createNodeElement(node, selection.has(node.id), usedTiles, tileCache)
         if (element) {
           nodesGroup.appendChild(element)
         }
       })
+      // Drop tiles that weren't used this frame
+      for (const key of tileCache.keys()) {
+        if (!usedTiles.has(key)) {
+          tileCache.delete(key)
+        }
+      }
     }
 
     const renderSelectionOverlay = (selectedNodes: SceneNode[]) => {

@@ -148,6 +148,25 @@ describe('scene store', () => {
     expect(imageNode.image?.maxTileLevel).toBe(0)
   })
 
+  it('normalizes large image uploads to the viewport size', () => {
+    const state = useSceneStore.getState()
+    state.updateViewport({ width: 1200, height: 800 })
+    state.updateWorldTransform({ position: { x: 0, y: 0 }, scale: 1 })
+
+    const imageNode = state.createImageNode({
+      assetId: 'huge-image',
+      intrinsicSize: { width: 4000, height: 3000 },
+    })
+
+    const screenWidth = imageNode.size.width * state.world.scale
+    const screenHeight = imageNode.size.height * state.world.scale
+
+    expect(screenWidth).toBeLessThanOrEqual(1200 * 0.5 + 1e-6)
+    expect(screenHeight).toBeLessThanOrEqual(800 * 0.5 + 1e-6)
+    expect(screenWidth).toBeCloseTo(533.33, 2)
+    expect(screenHeight).toBeCloseTo(400, 2)
+  })
+
   it('marks SVG images while keeping derived layout data', () => {
     const state = useSceneStore.getState()
     const svgNode = state.createImageNode({

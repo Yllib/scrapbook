@@ -4,19 +4,23 @@ import { uploadAsset, waitForAssetReady } from '../api/assets'
 import { summarizeTileLevels } from '../tiles/tileLevels'
 import { useSceneStore } from '../state/scene'
 import { toast } from '../state/toast'
+import { useUploadOverlayStore } from '../state/uploadOverlay'
 
 export function AssetDropZone() {
   const [dragging, setDragging] = useState(false)
   const [uploading, setUploading] = useState(false)
   const { id: projectId } = useParams()
   const createImage = useSceneStore((state) => state.createImageNode)
-  const zoomFactor = 1 / (useSceneStore.getState().world.scale || 1)
+  const startOverlay = useUploadOverlayStore((state) => state.start)
+  const completeOverlay = useUploadOverlayStore((state) => state.complete)
+  const failOverlay = useUploadOverlayStore((state) => state.fail)
 
   const handleFiles = useCallback(
     async (files: FileList | null) => {
       const file = files?.[0]
       if (!file) return
       setUploading(true)
+      startOverlay(`Uploading ${file.name}…`)
       const toastId = toast.info('Uploading image…')
       try {
         const { assetId } = await uploadAsset(file, projectId ?? undefined)
@@ -36,22 +40,20 @@ export function AssetDropZone() {
           },
           {
             name: file.name || 'Image',
-            size: {
-              width: intrinsicWidth * zoomFactor,
-              height: intrinsicHeight * zoomFactor,
-            },
           },
         )
         toast.success('Image ready', file.name)
+        completeOverlay('Image ready')
       } catch (error) {
         console.error('Failed to add image from drop', error)
         toast.error('Upload failed', error instanceof Error ? error.message : undefined)
+        failOverlay(error instanceof Error ? error.message : 'Upload failed')
       } finally {
         setUploading(false)
         toast.dismiss(toastId)
       }
     },
-    [createImage, projectId, zoomFactor],
+    [createImage, projectId, startOverlay, completeOverlay, failOverlay],
   )
 
   const handleDragOver = useCallback((event: DragEvent<HTMLDivElement>) => {

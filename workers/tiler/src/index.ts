@@ -10,7 +10,8 @@ dotenv.config({ path: path.join(rootDir, '.env') })
 dotenv.config({ path: path.join(rootDir, '.env.local'), override: true })
 
 const TILE_SIZE = 256
-const LOW_RES_DIVISOR = 4 // downscale factor for the single low-res LOD
+// Downscale factor per additional LOD (power-of-two pyramid: level z => scale = 2^z)
+const LOD_STEP = 2
 
 const config: Config = {
   bucket: process.env.S3_BUCKET ?? null,
@@ -170,10 +171,15 @@ async function generateTiles(assetId: string, source: Buffer, width: number, hei
   }
 
   const maxDimension = Math.max(width, height)
-  // Only two LODs: full-res (level 0) and one downscaled level for extreme zoom-out.
-  const levels = [0]
-  if (Math.max(width, height) > TILE_SIZE) {
-    levels.push(1)
+  const levels: number[] = []
+  let level = 0
+  let currentMax = maxDimension
+  // Build pyramid until the largest dimension fits within a single tile (or hits level cap)
+  while (true) {
+    levels.push(level)
+    if (currentMax <= TILE_SIZE) break
+    level += 1
+    currentMax = Math.max(1, Math.ceil(maxDimension / LOD_STEP ** level))
   }
 
   for (const level of levels) {
@@ -187,7 +193,7 @@ async function generateTilesForLevel(
   height: number,
   level: number,
 ) {
-  const scale = level === 0 ? 1 : LOW_RES_DIVISOR
+  const scale = LOD_STEP ** level
   const targetWidth = Math.max(1, Math.ceil(width / scale))
   const targetHeight = Math.max(1, Math.ceil(height / scale))
   const quality = Math.max(50, 80 - level * 5)
@@ -255,7 +261,8 @@ async function generateTilesForLevel(
               bottom: bleed - bleedBottom + Math.max(0, TILE_SIZE - tileHeight),
               left: bleed - bleedLeft,
               right: bleed - bleedRight + Math.max(0, TILE_SIZE - tileWidth),
-              extendWith: 'copy',
+              extendWith: 'background',
+              background: { r: 0, g: 0, b: 0, alpha: 0 },
             })
             .toBuffer()
 
@@ -272,7 +279,8 @@ async function generateTilesForLevel(
                 left: 0,
                 right: extraRight,
                 bottom: extraBottom,
-                extendWith: 'copy',
+                extendWith: 'background',
+                background: { r: 0, g: 0, b: 0, alpha: 0 },
               })
               .toBuffer()
           }

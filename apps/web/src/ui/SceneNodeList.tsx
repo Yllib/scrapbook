@@ -8,7 +8,7 @@ import {
   type FormEvent,
   type KeyboardEvent as ReactKeyboardEvent,
 } from 'react'
-import { Settings } from 'lucide-react'
+import { Settings, ChevronDown } from 'lucide-react'
 import { useSceneStore } from '../state/scene'
 import { useDialogStore } from '../state/dialog'
 
@@ -28,6 +28,8 @@ export function SceneNodeList() {
   const [editingId, setEditingId] = useState<string | null>(null)
   const [editingValue, setEditingValue] = useState('')
   const [settingsOpen, setSettingsOpen] = useState(false)
+  const [collapsed, setCollapsed] = useState(true)
+  const [compactMode, setCompactMode] = useState(true)
   const settingsRef = useRef<HTMLDivElement>(null)
 
   const items = useMemo(() => {
@@ -131,6 +133,10 @@ export function SceneNodeList() {
     [setBackgroundColor],
   )
 
+  const handleToggleCompact = useCallback(() => {
+    setCompactMode((prev) => !prev)
+  }, [])
+
   useEffect(() => {
     if (!settingsOpen) return undefined
     const handlePointerDown = (event: PointerEvent) => {
@@ -161,7 +167,18 @@ export function SceneNodeList() {
 
   const header = (
     <header>
-      <span>Scene Nodes</span>
+      <div className="scene-node-title">
+        <button
+          type="button"
+          className="scene-node-collapse"
+          onClick={() => setCollapsed((open) => !open)}
+          aria-expanded={!collapsed}
+          aria-label={collapsed ? 'Expand scene nodes' : 'Collapse scene nodes'}
+        >
+          <ChevronDown size={16} strokeWidth={2} aria-hidden="true" className={collapsed ? 'collapsed' : ''} />
+        </button>
+        <span>Scene Nodes</span>
+      </div>
       <div className="scene-node-settings" ref={settingsRef}>
         <button
           type="button"
@@ -183,6 +200,10 @@ export function SceneNodeList() {
               <input type="checkbox" checked={showOrigin} onChange={handleToggleOrigin} />
               <span>Show origin</span>
             </label>
+            <label className="scene-settings-item scene-settings-item--toggle">
+              <input type="checkbox" checked={compactMode} onChange={handleToggleCompact} />
+              <span>Compact mode</span>
+            </label>
             <label className="scene-settings-item scene-settings-item--color">
               <span>Background</span>
               <input type="color" value={backgroundColor} onChange={handleBackgroundChange} />
@@ -195,7 +216,7 @@ export function SceneNodeList() {
 
   if (items.length === 0) {
     return (
-      <div className="scene-debug">
+      <div className={`scene-debug${compactMode ? ' compact' : ''}`}>
         {header}
         <p className="empty">No nodes yet — add one to get started.</p>
       </div>
@@ -203,64 +224,68 @@ export function SceneNodeList() {
   }
 
   return (
-    <div className="scene-debug">
+    <div className={`scene-debug${compactMode ? ' compact' : ''}`}>
       {header}
-      <ol>
-        {[...items].reverse().map((item) => (
-          <li
-            key={item.id}
-            className={item.isSelected ? 'selected' : undefined}
-            onClick={() => handleSelect(item.id)}
-          >
-            <div className="scene-node-main">
-              {editingId === item.id ? (
-                <form
-                  className="scene-node-rename"
-                  onSubmit={handleRenameSubmit}
-                  onClick={(event) => event.stopPropagation()}
+      {!collapsed && (
+        <ol>
+          {[...items].reverse().map((item) => (
+            <li
+              key={item.id}
+              className={item.isSelected ? 'selected' : undefined}
+              onClick={() => handleSelect(item.id)}
+            >
+              <div className="scene-node-main">
+                {editingId === item.id ? (
+                  <form
+                    className="scene-node-rename"
+                    onSubmit={handleRenameSubmit}
+                    onClick={(event) => event.stopPropagation()}
+                  >
+                    <input
+                      className="scene-node-rename-input"
+                      value={editingValue}
+                      onChange={handleRenameInput}
+                      onKeyDown={handleRenameKeyDown}
+                      autoFocus
+                      onBlur={commitRename}
+                      aria-label="Rename node"
+                    />
+                  </form>
+                ) : (
+                  <span className="label">
+                    #{item.index + 1} {item.name}
+                  </span>
+                )}
+                {!compactMode && (
+                  <span className="coords">
+                    ({item.x}, {item.y})
+                  </span>
+                )}
+              </div>
+              <div className="scene-node-actions" onClick={(event) => event.stopPropagation()}>
+                <button
+                  type="button"
+                  className="scene-node-action scene-node-action--rename"
+                  onClick={() => beginRename(item.id, item.name, item.locked)}
+                  disabled={item.locked}
+                  aria-label="Rename node"
                 >
-                  <input
-                    className="scene-node-rename-input"
-                    value={editingValue}
-                    onChange={handleRenameInput}
-                    onKeyDown={handleRenameKeyDown}
-                    autoFocus
-                    onBlur={commitRename}
-                    aria-label="Rename node"
-                  />
-                </form>
-              ) : (
-                <span className="label">
-                  #{item.index + 1} {item.name}
-                </span>
-              )}
-              <span className="coords">
-                ({item.x}, {item.y})
-              </span>
-            </div>
-            <div className="scene-node-actions" onClick={(event) => event.stopPropagation()}>
-              <button
-                type="button"
-                className="scene-node-action scene-node-action--rename"
-                onClick={() => beginRename(item.id, item.name, item.locked)}
-                disabled={item.locked}
-                aria-label="Rename node"
-              >
-                <EditIcon />
-              </button>
-              <button
-                type="button"
-                className="scene-node-action scene-node-action--delete"
-                onClick={() => handleDelete(item.id, item.name, item.locked)}
-                disabled={item.locked}
-                aria-label="Delete node"
-              >
-                <MiniTrashIcon />
-              </button>
-            </div>
-          </li>
-        ))}
-      </ol>
+                  <EditIcon />
+                </button>
+                <button
+                  type="button"
+                  className="scene-node-action scene-node-action--delete"
+                  onClick={() => handleDelete(item.id, item.name, item.locked)}
+                  disabled={item.locked}
+                  aria-label="Delete node"
+                >
+                  <MiniTrashIcon />
+                </button>
+              </div>
+            </li>
+          ))}
+        </ol>
+      )}
     </div>
   )
 }

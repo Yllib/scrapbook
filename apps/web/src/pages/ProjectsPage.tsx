@@ -1,8 +1,10 @@
 import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { listProjects, createProject, deleteProject, updateProject, type ProjectRecord } from '../api/projects'
-import { Pencil, Trash2, Plus, Link2, Copy } from 'lucide-react'
+import { Pencil, Trash2, Plus, Link2, Copy, User, Send } from 'lucide-react'
+import { addCollaboratorByEmail, listCollaborators, removeCollaborator, type CollaboratorRecord } from '../api/collaborators'
 import { useSceneStore } from '../state/scene'
+import { useAuthStore } from '../state/auth'
 import { TopBar } from '../ui/TopBar'
 import { createShareLink, getShareLink, revokeShareLink } from '../api/projects'
 
@@ -20,6 +22,15 @@ type ShareDialogState = {
   copying: boolean
 }
 
+type ShareCollaboratorDialogState = {
+  open: boolean
+  project?: ProjectRecord
+  email: string
+  loading: boolean
+  error: string | null
+  collaborators: CollaboratorRecord[]
+}
+
 export function ProjectsPage() {
   const [projects, setProjects] = useState<ProjectRecord[]>([])
   const [loading, setLoading] = useState(false)
@@ -27,6 +38,8 @@ export function ProjectsPage() {
   const [nameDialog, setNameDialog] = useState<NameDialogState>({ open: false })
   const [nameInput, setNameInput] = useState('')
   const [shareDialog, setShareDialog] = useState<ShareDialogState>({ open: false, token: null, loading: false, error: null, copying: false })
+  const [shareCollabDialog, setShareCollabDialog] = useState<ShareCollaboratorDialogState>({ open: false, project: undefined, email: '', loading: false, error: null, collaborators: [] })
+  const currentUserId = useAuthStore((s) => s.user?.id)
   const navigate = useNavigate()
 
   useEffect(() => {
@@ -35,7 +48,16 @@ export function ProjectsPage() {
       setLoading(true)
       try {
         const data = await listProjects()
-        if (!cancelled) setProjects(data)
+        if (!cancelled) {
+          const currentUserId = undefined
+          const mapped = data.map((p) => ({
+            ...p,
+            ownerId: p.ownerId ?? (p as any).owner?.id,
+            ownerEmail: p.ownerEmail ?? (p as any).owner?.email,
+            currentUserId,
+          }))
+          setProjects(mapped)
+        }
       } catch (err) {
         if (!cancelled) setError(err instanceof Error ? err.message : 'Failed to load projects')
       } finally {
@@ -145,15 +167,51 @@ export function ProjectsPage() {
     }
   }
 
+  const handleOpenShareCollaborator = async (project: ProjectRecord) => {
+    setShareCollabDialog({ open: true, project, email: '', loading: true, error: null, collaborators: [] })
+    try {
+      const rows = await listCollaborators(project.id)
+      setShareCollabDialog({ open: true, project, email: '', loading: false, error: null, collaborators: rows })
+    } catch (err) {
+      setShareCollabDialog({ open: true, project, email: '', loading: false, error: err instanceof Error ? err.message : 'Failed to load collaborators', collaborators: [] })
+    }
+  }
+
+  const handleShareCollaborator = async () => {
+    const email = shareCollabDialog.email.trim()
+    const project = shareCollabDialog.project
+    if (!email || !project) return
+    setShareCollabDialog((p) => ({ ...p, loading: true, error: null }))
+    try {
+      await addCollaboratorByEmail(project.id, email, 'EDITOR')
+      const rows = await listCollaborators(project.id)
+      setShareCollabDialog({ open: true, project, email: '', loading: false, error: null, collaborators: rows })
+    } catch (err) {
+      setShareCollabDialog((p) => ({ ...p, loading: false, error: err instanceof Error ? err.message : 'Failed to share' }))
+    }
+  }
+
+  const handleRemoveCollaborator = async (userId: string) => {
+    const project = shareCollabDialog.project
+    if (!project) return
+    setShareCollabDialog((p) => ({ ...p, loading: true, error: null }))
+    try {
+      await removeCollaborator(project.id, userId)
+      const rows = await listCollaborators(project.id)
+      setShareCollabDialog((p) => ({ ...p, loading: false, collaborators: rows }))
+    } catch (err) {
+      setShareCollabDialog((p) => ({ ...p, loading: false, error: err instanceof Error ? err.message : 'Failed to remove' }))
+    }
+  }
+
   return (
     <div className="page-shell">
       <div className="page-card">
         <TopBar />
         <div className="page-head">
-          <h1>Projects</h1>
+          <h1>Canvases</h1>
           <button className="primary-icon-button" onClick={openCreateDialog} disabled={loading}>
             <Plus size={18} />
-            <span>New Canvas</span>
           </button>
         </div>
         {error ? <p className="auth-error">{error}</p> : null}
@@ -161,11 +219,37 @@ export function ProjectsPage() {
         <ul className="project-list">
           {projects.map((p) => (
             <li key={p.id}>
-              <button className="link" onClick={() => navigate(`/projects/${p.id}`)}>
-                {p.name || 'Untitled'}
-              </button>
-              <span className="muted">Updated {new Date(p.updatedAt).toLocaleString()}</span>
+              <div
+                className="project-row"
+                style={{ display: 'flex', alignItems: 'center', gap: 8, flex: '1 1 auto', minWidth: 0, flexWrap: 'nowrap' }}
+              >
+                <div className="project-left" style={{ display: 'inline-flex', alignItems: 'center', gap: 6, minWidth: 0, flex: '1 1 auto' }}>
+                  <button
+                    className="link"
+                    style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: '100%' }}
+                    onClick={() => navigate(`/projects/${p.id}`)}
+                  >
+                    {p.name || 'Untitled'}
+                  </button>
+                  {p.ownerEmail ? (
+                    <span className="owner-icon" title={`Owner: ${p.ownerEmail}`}>
+                      <User size={14} />
+                    </span>
+                  ) : null}
+                </div>
+                <div
+                  className="project-meta"
+                  style={{ display: 'flex', alignItems: 'center', gap: 8, marginLeft: 'auto', whiteSpace: 'nowrap', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis' }}
+                >
+                  <span className="muted" style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                    Updated {new Date(p.updatedAt).toLocaleString()}
+                  </span>
+                </div>
+              </div>
               <div className="project-actions">
+                <button className="project-icon-button ghost" title="Share with collaborator" aria-label="Share with collaborator" onClick={() => handleOpenShareCollaborator(p)}>
+                  <Send size={16} />
+                </button>
                 <button className="project-icon-button ghost" title="Share view link" aria-label="Share view link" onClick={() => openShareDialog(p)}>
                   <Link2 size={16} />
                 </button>
@@ -263,6 +347,64 @@ export function ProjectsPage() {
                   Close
                 </button>
               </div>
+            </div>
+          </div>
+        ) : null}
+
+        {shareCollabDialog.open ? (
+          <div className="modal-backdrop">
+            <div className="modal-card">
+              <h2>Share canvas</h2>
+              <p className="muted">{shareCollabDialog.project?.name || 'Untitled canvas'}</p>
+              {shareCollabDialog.error ? <p className="auth-error">{shareCollabDialog.error}</p> : null}
+              <label>
+                Collaborator email
+                <input
+                  type="email"
+                  value={shareCollabDialog.email}
+                  onChange={(e) => setShareCollabDialog((p) => ({ ...p, email: e.target.value }))}
+                  placeholder="user@example.com"
+                  autoFocus
+                />
+              </label>
+              <div className="modal-actions">
+                <button className="ghost" onClick={() => setShareCollabDialog({ open: false, project: undefined, email: '', loading: false, error: null, collaborators: [] })}>
+                  Cancel
+                </button>
+                <button onClick={handleShareCollaborator} disabled={!shareCollabDialog.email || shareCollabDialog.loading}>
+                  {shareCollabDialog.loading ? <Send className="spin" size={16} /> : <Send size={16} />}
+                  Share
+                </button>
+              </div>
+
+              {shareCollabDialog.collaborators.length > 0 ? (
+                <table className="data-table compact">
+                  <thead>
+                    <tr>
+                      <th>User</th>
+                      <th>Role</th>
+                      <th></th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {shareCollabDialog.collaborators.map((c) => (
+                      <tr key={c.userId}>
+                        <td>{c.user.email}</td>
+                        <td>{c.role}</td>
+                        <td className="table-actions">
+                          {shareCollabDialog.project?.ownerId && shareCollabDialog.project.ownerId !== c.userId ? (
+                            <button className="danger" onClick={() => handleRemoveCollaborator(c.userId)} disabled={shareCollabDialog.loading}>
+                              Remove
+                            </button>
+                          ) : (
+                            <span className="muted">Owner</span>
+                          )}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              ) : null}
             </div>
           </div>
         ) : null}

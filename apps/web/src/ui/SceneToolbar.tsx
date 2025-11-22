@@ -27,6 +27,7 @@ import { uploadAsset, waitForAssetReady } from '../api/assets'
 import { useDialogStore } from '../state/dialog'
 import { summarizeTileLevels } from '../tiles/tileLevels'
 import { toast } from '../state/toast'
+import { useUploadOverlayStore } from '../state/uploadOverlay'
 import {
   AlignCenter,
   AlignLeft,
@@ -90,6 +91,9 @@ export function SceneToolbar() {
   const viewOnly = useSceneStore((state) => state.viewOnly)
   const createShape = useSceneStore((state) => state.createShapeNode)
   const createImage = useSceneStore((state) => state.createImageNode)
+  const startOverlay = useUploadOverlayStore((state) => state.start)
+  const completeOverlay = useUploadOverlayStore((state) => state.complete)
+  const failOverlay = useUploadOverlayStore((state) => state.fail)
   const createText = useSceneStore((state) => state.createTextNode)
   const nodes = useSceneStore((state) => state.nodes)
   const selectedIds = useSceneStore((state) => state.selectedIds)
@@ -246,6 +250,7 @@ export function SceneToolbar() {
       const file = event.target.files?.[0]
       if (!file) return
       setUploading(true)
+      startOverlay(`Uploading ${file.name}…`)
       const toastId = toast.info('Uploading image…')
       try {
         const { assetId } = await uploadAsset(file, projectId ?? undefined)
@@ -268,23 +273,21 @@ export function SceneToolbar() {
           },
           {
             name: file.name || 'Image',
-            size: {
-              width: intrinsicWidth * zoomFactor,
-            height: intrinsicHeight * zoomFactor,
           },
-        },
-      )
+        )
         toast.success('Image ready', file.name)
+        completeOverlay('Image ready')
       } catch (error) {
         console.error('Failed to upload image asset', error)
         toast.error('Upload failed', error instanceof Error ? error.message : undefined)
+        failOverlay(error instanceof Error ? error.message : 'Upload failed')
       } finally {
         setUploading(false)
         toast.dismiss(toastId)
         event.target.value = ''
       }
     },
-    [createImage, zoomFactor, projectId],
+    [createImage, projectId, startOverlay, completeOverlay, failOverlay],
   )
 
   const handleFillChange = useCallback(

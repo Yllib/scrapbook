@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { ArrowLeft, Loader2, Pencil, Plus, RefreshCcw, ShieldCheck, Trash2, UserPlus } from 'lucide-react'
+import { ArrowLeft, Loader2, Pencil, Plus, RefreshCcw, ShieldCheck, Trash2, UserPlus, Lock } from 'lucide-react'
 import {
   createUser,
   createUserProject,
@@ -312,6 +312,9 @@ export function AdminUsersPage() {
                         <td className="table-actions">
                           <button className="ghost" onClick={() => openProjectDialog('rename', p)}>
                             <Pencil size={14} />
+                          </button>
+                          <button className="ghost" onClick={() => navigate(`/projects/${p.id}/share`)} title="Permissions">
+                            <Lock size={14} />
                           </button>
                           <button
                             className="danger"

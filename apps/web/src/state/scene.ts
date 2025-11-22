@@ -114,6 +114,8 @@ const DEFAULT_RECT_SIZE: Size2D = { width: 160, height: 120 }
 const HISTORY_LIMIT = 200
 // Minimum node size in world units; keep tiny so resizing still works at extreme zoom-in
 const MIN_NODE_SIZE = 0.01
+const DEFAULT_VIEWPORT_FOR_SIZING: Viewport = { width: 1280, height: 720 }
+const DEFAULT_IMAGE_SCREEN_FRACTION = 0.5
 const DEFAULT_FILL = '#38bdf8'
 const DEFAULT_STROKE = '#0ea5e9'
 const DEFAULT_TILE_SIZE = 256
@@ -314,6 +316,39 @@ const unique = (values: string[]) => {
 export const getEffectiveScaleFromWorld = (world: WorldTransform): number => world.scale
 
 const getEffectiveWorldScale = (state: SceneState): number => getEffectiveScaleFromWorld(state.world)
+
+const getViewportForSizing = (viewport: Viewport): Viewport => {
+  const width = Number.isFinite(viewport.width) && viewport.width > 0 ? viewport.width : DEFAULT_VIEWPORT_FOR_SIZING.width
+  const height =
+    Number.isFinite(viewport.height) && viewport.height > 0 ? viewport.height : DEFAULT_VIEWPORT_FOR_SIZING.height
+  return { width, height }
+}
+
+export const normalizeImageScreenSize = (intrinsic: Size2D, viewport: Viewport): Size2D => {
+  const safeViewport = getViewportForSizing(viewport)
+  const safeWidth = Number.isFinite(intrinsic.width) && intrinsic.width > 0 ? intrinsic.width : DEFAULT_RECT_SIZE.width
+  const safeHeight = Number.isFinite(intrinsic.height) && intrinsic.height > 0 ? intrinsic.height : DEFAULT_RECT_SIZE.height
+
+  const aspect = safeHeight === 0 ? 1 : safeWidth / safeHeight
+  const maxScreenWidth = safeViewport.width * DEFAULT_IMAGE_SCREEN_FRACTION
+  const maxScreenHeight = safeViewport.height * DEFAULT_IMAGE_SCREEN_FRACTION
+
+  let targetScreenWidth = maxScreenWidth
+  let targetScreenHeight = targetScreenWidth / aspect
+
+  if (targetScreenHeight > maxScreenHeight) {
+    targetScreenHeight = maxScreenHeight
+    targetScreenWidth = targetScreenHeight * aspect
+  }
+
+  const clampedScreenWidth = Math.min(targetScreenWidth, safeWidth)
+  const clampedScreenHeight = clampedScreenWidth / aspect
+
+  return {
+    width: Math.max(MIN_NODE_SIZE, clampedScreenWidth),
+    height: Math.max(MIN_NODE_SIZE, clampedScreenHeight),
+  }
+}
 
 export const getWorldScenePosition = (world: WorldTransform): Vec2 => ({
   x: world.position.x,
@@ -576,9 +611,10 @@ createRectangleNode: (overrides = {}) => {
                 rows: Math.max(1, Math.ceil(intrinsic.height / tileSize)),
               })
     const maxTileLevel = isSvg ? 0 : image.maxTileLevel ?? getMaxTileLevel(normalizedTileLevels)
+    const normalizedScreenSize = normalizeImageScreenSize(intrinsic, state.viewport)
     const size = overrides.size ?? {
-      width: intrinsic.width * factor,
-      height: intrinsic.height * factor,
+      width: normalizedScreenSize.width * factor,
+      height: normalizedScreenSize.height * factor,
     }
 
     const node: SceneNode = {

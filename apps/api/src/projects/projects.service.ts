@@ -40,6 +40,9 @@ export class ProjectsService {
           { collaborators: { some: { userId: ownerId } } },
         ],
       },
+      include: {
+        owner: { select: { id: true, email: true } },
+      },
       orderBy: { updatedAt: 'desc' },
     });
   }
@@ -55,10 +58,7 @@ export class ProjectsService {
     const existing = await this.prisma.project.findFirst({
       where: {
         id,
-        OR: [
-          { ownerId: userId },
-          { collaborators: { some: { userId, role: { in: ['OWNER', 'EDITOR'] } } } },
-        ],
+        ownerId: userId,
       },
     });
     if (!existing) {

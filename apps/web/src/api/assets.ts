@@ -73,18 +73,26 @@ function expectedTileCount(meta: AssetMeta, tileSize = 256): number {
   const height = meta.height ?? 0
   if (width <= 0 || height <= 0) return 0
 
-  // Level 0 (full res)
-  const level0Cols = Math.max(1, Math.ceil(width / tileSize))
-  const level0Rows = Math.max(1, Math.ceil(height / tileSize))
+  const maxDimension = Math.max(width, height)
+  const LOD_STEP = 2
 
-  // Level 1 (single low-res level at 4x downscale, matching tiler scale)
-  const SCALE = 4
-  const targetW = Math.max(1, Math.ceil(width / SCALE))
-  const targetH = Math.max(1, Math.ceil(height / SCALE))
-  const level1Cols = Math.max(1, Math.ceil(targetW / tileSize))
-  const level1Rows = Math.max(1, Math.ceil(targetH / tileSize))
+  let level = 0
+  let currentMax = maxDimension
+  let total = 0
 
-  return level0Cols * level0Rows + level1Cols * level1Rows
+  while (true) {
+    const levelWidth = Math.max(1, Math.ceil(width / LOD_STEP ** level))
+    const levelHeight = Math.max(1, Math.ceil(height / LOD_STEP ** level))
+    const cols = Math.max(1, Math.ceil(levelWidth / tileSize))
+    const rows = Math.max(1, Math.ceil(levelHeight / tileSize))
+    total += cols * rows
+
+    if (currentMax <= tileSize) break
+    level += 1
+    currentMax = Math.max(1, Math.ceil(maxDimension / LOD_STEP ** level))
+  }
+
+  return total
 }
 
 export async function waitForAssetReady(assetId: string, options: WaitForAssetOptions = {}) {

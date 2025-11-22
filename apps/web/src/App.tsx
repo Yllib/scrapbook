@@ -4,6 +4,7 @@ import { SVGStage } from './canvas/SVGStage'
 import { SceneToolbar } from './ui/SceneToolbar'
 import { SceneNodeList } from './ui/SceneNodeList'
 import { ConfirmDialog } from './ui/ConfirmDialog'
+import { UploadOverlay } from './ui/UploadOverlay'
 import { useSceneStore } from './state/scene'
 import { useProjectPersistence } from './hooks/useProjectPersistence'
 import { useNavigate, useParams } from 'react-router-dom'
@@ -35,6 +36,7 @@ export function App() {
       <AssetDropZone />
       <SceneToolbar />
       <SceneNodeList />
+      <UploadOverlay />
       <ConfirmDialog />
       <ToastViewport />
     </div>

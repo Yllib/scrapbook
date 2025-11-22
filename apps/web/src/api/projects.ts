@@ -7,6 +7,9 @@ export interface ProjectRecord {
   scene: SceneDocument | null
   createdAt: string
   updatedAt: string
+  ownerId?: string
+  ownerEmail?: string
+  currentUserId?: string
 }
 
 export interface SharedProjectRecord {
