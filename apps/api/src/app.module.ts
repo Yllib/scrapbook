@@ -10,6 +10,7 @@ import { StorageModule } from './storage/storage.module';
 import { ProjectsModule } from './projects/projects.module';
 import { AuthModule } from './auth/auth.module';
 import { UsersModule } from './users/users.module';
+import { CollabModule } from './collab/collab.module';
 
 const rootEnvDir = path.resolve(__dirname, '../../..');
 
@@ -28,6 +29,7 @@ const rootEnvDir = path.resolve(__dirname, '../../..');
     ProjectsModule,
     AuthModule,
     UsersModule,
+    CollabModule,
   ],
   controllers: [AppController, HealthController],
   providers: [AppService],
