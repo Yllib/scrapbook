@@ -1,0 +1,96 @@
+.connection-status-badge {
+  position: fixed;
+  bottom: 16px;
+  right: 16px;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border-radius: 6px;
+  font-size: 13px;
+  font-weight: 500;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
+  backdrop-filter: blur(8px);
+  z-index: 1000;
+  transition: all 0.2s ease;
+}
+
+.connection-status-badge__icon {
+  font-size: 16px;
+  line-height: 1;
+}
+
+.connection-status-badge__label {
+  white-space: nowrap;
+}
+
+/* Connected state */
+.connection-status-badge--connected {
+  background: rgba(16, 185, 129, 0.15);
+  border: 1px solid rgba(16, 185, 129, 0.3);
+  color: #10b981;
+}
+
+.connection-status-badge--connected .connection-status-badge__icon {
+  color: #10b981;
+  animation: pulse-green 2s ease-in-out infinite;
+}
+
+/* Connecting state */
+.connection-status-badge--connecting {
+  background: rgba(59, 130, 246, 0.15);
+  border: 1px solid rgba(59, 130, 246, 0.3);
+  color: #3b82f6;
+}
+
+.connection-status-badge--connecting .connection-status-badge__icon {
+  color: #3b82f6;
+  animation: pulse-blue 1s ease-in-out infinite;
+}
+
+/* Disconnected state */
+.connection-status-badge--disconnected {
+  background: rgba(107, 114, 128, 0.15);
+  border: 1px solid rgba(107, 114, 128, 0.3);
+  color: #6b7280;
+}
+
+/* Error state */
+.connection-status-badge--error {
+  background: rgba(239, 68, 68, 0.15);
+  border: 1px solid rgba(239, 68, 68, 0.3);
+  color: #ef4444;
+}
+
+.connection-status-badge--error .connection-status-badge__icon {
+  color: #ef4444;
+  animation: pulse-red 1s ease-in-out infinite;
+}
+
+/* Animations */
+@keyframes pulse-green {
+  0%, 100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.5;
+  }
+}
+
+@keyframes pulse-blue {
+  0%, 100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.4;
+  }
+}
+
+@keyframes pulse-red {
+  0%, 100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.6;
+  }
+}

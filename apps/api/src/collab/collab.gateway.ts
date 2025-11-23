@@ -52,17 +52,37 @@ export class CollabGateway implements OnModuleInit, OnModuleDestroy {
   }
 
   private async handleConnection(socket: WebSocket, req: IncomingMessage) {
+    let isAlive = true
+    let pingInterval: NodeJS.Timeout | null = null
+
     socket.on('close', (code, reason) => {
+      if (pingInterval) clearInterval(pingInterval)
       this.logger.log(`collab socket closed code=${code} reason=${reason?.toString?.() ?? ''}`)
     })
     socket.on('error', (err: any) => {
       this.logger.warn(`collab socket error: ${err instanceof Error ? err.message : String(err)}`)
     })
+    socket.on('pong', () => {
+      isAlive = true
+    })
+
     try {
       const { projectId, userId, initialScene } = await this.authorize(req)
       this.ensureDocHydrated(projectId, initialScene, userId)
       setupWSConnection(socket as any, req, { docName: projectId, gc: false })
       this.logger.log(`collab client connected user=${userId} project=${projectId}`)
+
+      // Start heartbeat ping/pong (every 20 seconds)
+      pingInterval = setInterval(() => {
+        if (!isAlive) {
+          this.logger.warn(`collab client unresponsive, terminating user=${userId} project=${projectId}`)
+          clearInterval(pingInterval!)
+          ;(socket as any).terminate()
+          return
+        }
+        isAlive = false
+        socket.ping()
+      }, 20000)
     } catch (err) {
       const reason = err instanceof Error ? err.message : 'Unauthorized'
       socket.close(CLOSE_POLICY_VIOLATION, reason)

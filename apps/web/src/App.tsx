@@ -13,6 +13,7 @@ import { AssetDropZone } from './ui/AssetDropZone'
 import { ToastViewport } from './ui/ToastViewport'
 import { useCollaboration } from './hooks/useCollaboration'
 import { RemoteCursors } from './canvas/RemoteCursors'
+import { ConnectionStatusBadge } from './ui/ConnectionStatusBadge'
 
 export function App() {
   const backgroundColor = useSceneStore((state) => state.backgroundColor)
@@ -43,6 +44,7 @@ export function App() {
       <UploadOverlay />
       <ConfirmDialog />
       <ToastViewport />
+      <ConnectionStatusBadge />
     </div>
   )
 }

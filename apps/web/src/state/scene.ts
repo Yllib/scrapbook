@@ -322,6 +322,9 @@ export interface SceneState {
   remoteSelections: RemoteSelection[]
   remoteLockIds: string[]
   setRemoteSelections: (selections: RemoteSelection[], lockedIds: string[]) => void
+  collabStatus: 'disconnected' | 'connecting' | 'connected' | 'error'
+  collabError: string | null
+  setCollabStatus: (status: 'disconnected' | 'connecting' | 'connected' | 'error', error?: string | null) => void
 }
 
 const unique = (values: string[]) => {
@@ -548,7 +551,9 @@ export const useSceneStore = create<SceneState>((set, get) => ({
   },
   remoteSelections: [],
   remoteLockIds: [],
-createRectangleNode: (overrides = {}) => {
+  collabStatus: 'disconnected',
+  collabError: null,
+  createRectangleNode: (overrides = {}) => {
     const state = get()
     const center = overrides.position ?? state.getWorldCenter()
     const size = overrides.size ?? DEFAULT_RECT_SIZE
@@ -1372,6 +1377,12 @@ createRectangleNode: (overrides = {}) => {
         lastSelectedId,
       }
     }),
+  setCollabStatus: (status, error = null) =>
+    set((prev) => ({
+      ...prev,
+      collabStatus: status,
+      collabError: error,
+    })),
   startMarquee: (start) =>
     set(() => ({
       marquee: {

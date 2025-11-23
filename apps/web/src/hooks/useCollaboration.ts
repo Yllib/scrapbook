@@ -62,19 +62,40 @@ export function useCollaboration(projectId?: string | null) {
       connect: true,
       disableBc: true,
     })
+
+    // Set initial status
+    useSceneStore.getState().setCollabStatus('connecting', null)
+
     let ready = false
     let applyingRemote = false
     provider.on('connection-error', (event) => {
       console.error('collab connection error', event)
+      useSceneStore.getState().setCollabStatus('error', 'Connection error')
     })
-    provider.on('connection-close', (event) => {
-      console.warn('collab connection closed', event?.code, event?.reason)
+    provider.on('connection-close', (event: any) => {
+      const code = event?.code
+      const reason = event?.reason
+      console.warn('collab connection closed', code, reason)
+
+      // Detect auth failures (code 1008 = Policy Violation)
+      if (code === 1008) {
+        useSceneStore.getState().setCollabStatus('error', 'Authentication failed')
+        provider.disconnect()  // Stop reconnection attempts
+      } else {
+        useSceneStore.getState().setCollabStatus('disconnected', null)
+      }
     })
     provider.on('status', (event: any) => {
       if (event.status === 'connected') {
         ready = true
+        useSceneStore.getState().setCollabStatus('connected', null)
         const selectionNow = useSceneStore.getState().selectedIds
         provider.awareness.setLocalStateField('selection', selectionNow)
+      } else if (event.status === 'disconnected') {
+        ready = false
+        useSceneStore.getState().setCollabStatus('disconnected', null)
+      } else if (event.status === 'connecting') {
+        useSceneStore.getState().setCollabStatus('connecting', null)
       }
     })
     const user = useAuthStore.getState().user

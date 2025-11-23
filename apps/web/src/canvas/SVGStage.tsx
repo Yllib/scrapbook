@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { ZoomBadge } from '../ui/ZoomBadge'
-import { useSceneStore, type Vec2, type SceneNode, DEFAULT_POLYGON_POINTS } from '../state/scene'
+import { useSceneStore, type Vec2, type SceneNode, type AABB, DEFAULT_POLYGON_POINTS, getNodeAABB } from '../state/scene'
 import { requestConfirmation } from '../state/dialog'
 import { pickTileLevel, MIN_TILE_PIXEL_DENSITY } from '../tiles/tileLevels'
 import { API_BASE } from '../api/client'
@@ -701,6 +701,13 @@ export function SVGStage() {
     ) => {
       const body = createNodeBody(node, usedTiles, tileCache)
       if (!body) return null
+
+      // Validate node position is finite before creating transform
+      if (!Number.isFinite(node.position.x) || !Number.isFinite(node.position.y)) {
+        console.warn(`Node ${node.id} has invalid position:`, node.position)
+        return null
+      }
+
       const group = createSvgElement('g')
       group.classList.add('svg-stage__node')
       group.dataset.nodeId = node.id
@@ -709,7 +716,8 @@ export function SVGStage() {
         group.classList.add('is-selected')
       }
       const rotation = (node.rotation * 180) / Math.PI
-      group.setAttribute('transform', `translate(${node.position.x} ${node.position.y}) rotate(${rotation})`)
+      const rotationValue = Number.isFinite(rotation) ? rotation : 0
+      group.setAttribute('transform', `translate(${node.position.x} ${node.position.y}) rotate(${rotationValue})`)
       body.classList.add('svg-stage__node-body')
       const hitTarget = createNodeHitElement(node, body)
       hitTarget.classList.add('svg-stage__node-hit')
@@ -718,23 +726,6 @@ export function SVGStage() {
     }
 
     const tileCache = new Map<string, SVGImageElement>()
-
-    const renderNodes = (nodes: SceneNode[], selection: Set<string>) => {
-      clearChildren(nodesGroup)
-      const usedTiles = new Set<string>()
-      nodes.forEach((node) => {
-        const element = createNodeElement(node, selection.has(node.id), usedTiles, tileCache)
-        if (element) {
-          nodesGroup.appendChild(element)
-        }
-      })
-      // Drop tiles that weren't used this frame
-      for (const key of tileCache.keys()) {
-        if (!usedTiles.has(key)) {
-          tileCache.delete(key)
-        }
-      }
-    }
 
     const renderSelectionOverlay = (selectedNodes: SceneNode[]) => {
       clearChildren(selectionGroup)
@@ -820,7 +811,7 @@ export function SVGStage() {
       const nodeById = new Map(nodes.map((node) => [node.id, node]))
       const safeScale = Math.max(scale, Number.EPSILON)
       const sizing = calculateSelectionHandleSizing()
-      const strokeWidth = (sizing.strokeWidth * 0.8) / safeScale
+      const strokeWidth = (sizing.strokeWidth * 1.2) / safeScale
       highlights.forEach((highlight) => {
         const node = nodeById.get(highlight.nodeId)
         if (!node) return
@@ -947,6 +938,181 @@ export function SVGStage() {
     const renderOverlays = () => {
       renderSelectionOverlay(selectedNodesCache)
       renderMarqueeOverlay(marqueeState)
+    }
+
+    const screenToWorld = (point: Vec2): Vec2 => ({
+      x: (point.x - translation.x) / scale,
+      y: (point.y - translation.y) / scale,
+    })
+
+    const worldToScreen = (point: Vec2): Vec2 => ({
+      x: point.x * scale + translation.x,
+      y: point.y * scale + translation.y,
+    })
+
+    const getViewportBounds = (): AABB => {
+      const { width: vpWidth, height: vpHeight } = getViewportSize()
+
+      // Convert viewport corners to world coordinates
+      const topLeft = screenToWorld({ x: 0, y: 0 })
+      const bottomRight = screenToWorld({ x: vpWidth, y: vpHeight })
+
+      return {
+        minX: topLeft.x,
+        minY: topLeft.y,
+        maxX: bottomRight.x,
+        maxY: bottomRight.y,
+      }
+    }
+
+    const getNodeScreenBounds = (node: SceneNode): AABB => {
+      const halfWidth = node.size.width / 2
+      const halfHeight = node.size.height / 2
+
+      // Get node corners in local space
+      const corners = [
+        { x: -halfWidth, y: -halfHeight },
+        { x: halfWidth, y: -halfHeight },
+        { x: halfWidth, y: halfHeight },
+        { x: -halfWidth, y: halfHeight },
+      ]
+
+      const rad = node.rotation
+      const cos = Math.cos(rad)
+      const sin = Math.sin(rad)
+
+      // Rotate corners and translate to world space
+      const worldCorners = corners.map((c) => ({
+        x: node.position.x + (c.x * cos - c.y * sin),
+        y: node.position.y + (c.x * sin + c.y * cos),
+      }))
+
+      // Convert to screen space
+      const screenCorners = worldCorners.map(worldToScreen)
+
+      return {
+        minX: Math.min(...screenCorners.map((c) => c.x)),
+        minY: Math.min(...screenCorners.map((c) => c.y)),
+        maxX: Math.max(...screenCorners.map((c) => c.x)),
+        maxY: Math.max(...screenCorners.map((c) => c.y)),
+      }
+    }
+
+    const createClippedNodeElement = (node: SceneNode, viewportBounds: AABB): SVGElement | null => {
+      // Calculate intersection of node bounds with viewport
+      const nodeAABB = getNodeAABB(node)
+      const visibleAABB = {
+        minX: Math.max(nodeAABB.minX, viewportBounds.minX),
+        minY: Math.max(nodeAABB.minY, viewportBounds.minY),
+        maxX: Math.min(nodeAABB.maxX, viewportBounds.maxX),
+        maxY: Math.min(nodeAABB.maxY, viewportBounds.maxY),
+      }
+
+      // Validate that we have a non-degenerate intersection
+      const width = visibleAABB.maxX - visibleAABB.minX
+      const height = visibleAABB.maxY - visibleAABB.minY
+
+      if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) {
+        // No valid intersection to render
+        return null
+      }
+
+      // Validate all position values are finite
+      if (!Number.isFinite(visibleAABB.minX) || !Number.isFinite(visibleAABB.minY)) {
+        return null
+      }
+
+      const group = createSvgElement('g')
+      group.classList.add('svg-stage__node-clipped')
+      group.dataset.nodeId = node.id
+
+      // Create semi-transparent fill to show node extent
+      const fillRect = createSvgElement('rect')
+      fillRect.setAttribute('x', visibleAABB.minX.toString())
+      fillRect.setAttribute('y', visibleAABB.minY.toString())
+      fillRect.setAttribute('width', width.toString())
+      fillRect.setAttribute('height', height.toString())
+      fillRect.setAttribute('fill', node.fill || DEFAULT_SHAPE_FILL)
+      fillRect.setAttribute('fill-opacity', '0.3')
+
+      // Create border outline
+      const borderRect = createSvgElement('rect')
+      borderRect.setAttribute('x', visibleAABB.minX.toString())
+      borderRect.setAttribute('y', visibleAABB.minY.toString())
+      borderRect.setAttribute('width', width.toString())
+      borderRect.setAttribute('height', height.toString())
+      borderRect.setAttribute('fill', 'none')
+      borderRect.setAttribute('stroke', node.stroke?.color || DEFAULT_SHAPE_STROKE)
+
+      const safeScale = Math.max(scale, Number.EPSILON)
+      const strokeWidth = Math.max(1 / safeScale, (node.stroke?.width || 2) / safeScale)
+      borderRect.setAttribute('stroke-width', strokeWidth.toString())
+
+      group.appendChild(fillRect)
+      group.appendChild(borderRect)
+      return group
+    }
+
+    const renderNodes = (nodes: SceneNode[], selection: Set<string>) => {
+      clearChildren(nodesGroup)
+      const usedTiles = new Set<string>()
+      const viewportBounds = getViewportBounds()
+      const CULL_PADDING = 100 // Extra margin in world units
+
+      nodes.forEach((node) => {
+        // Calculate node's world AABB
+        const nodeAABB = getNodeAABB(node)
+
+        // Check if completely off-screen (with padding)
+        if (
+          nodeAABB.maxX < viewportBounds.minX - CULL_PADDING ||
+          nodeAABB.minX > viewportBounds.maxX + CULL_PADDING ||
+          nodeAABB.maxY < viewportBounds.minY - CULL_PADDING ||
+          nodeAABB.minY > viewportBounds.maxY + CULL_PADDING
+        ) {
+          return // Skip rendering - 100% off-screen
+        }
+
+        // Check if node exceeds safe screen coordinate limits
+        // Modern browsers can handle coordinates up to ~16M pixels reliably
+        // Beyond that, SVG rendering becomes unpredictable
+        const screenBounds = getNodeScreenBounds(node)
+        const MAX_SAFE_SCREEN_COORD = 10_000_000 // 10 million pixels (conservative)
+
+        // Also check if bounds calculations produced non-finite values
+        const hasValidBounds =
+          Number.isFinite(screenBounds.minX) &&
+          Number.isFinite(screenBounds.maxX) &&
+          Number.isFinite(screenBounds.minY) &&
+          Number.isFinite(screenBounds.maxY)
+
+        const isGiant =
+          !hasValidBounds ||
+          Math.abs(screenBounds.minX) > MAX_SAFE_SCREEN_COORD ||
+          Math.abs(screenBounds.maxX) > MAX_SAFE_SCREEN_COORD ||
+          Math.abs(screenBounds.minY) > MAX_SAFE_SCREEN_COORD ||
+          Math.abs(screenBounds.maxY) > MAX_SAFE_SCREEN_COORD
+
+        if (isGiant) {
+          // Render simplified/clipped version
+          const element = createClippedNodeElement(node, viewportBounds)
+          if (element) {
+            nodesGroup.appendChild(element)
+          }
+        } else {
+          // Normal rendering
+          const element = createNodeElement(node, selection.has(node.id), usedTiles, tileCache)
+          if (element) {
+            nodesGroup.appendChild(element)
+          }
+        }
+      })
+      // Drop tiles that weren't used this frame
+      for (const key of tileCache.keys()) {
+        if (!usedTiles.has(key)) {
+          tileCache.delete(key)
+        }
+      }
     }
 
     const renderScene = (nodes: SceneNode[], selection: Set<string>) => {
@@ -1156,16 +1322,6 @@ export function SVGStage() {
 
     const resizeObserver = new ResizeObserver(() => updateViewport())
     resizeObserver.observe(host)
-
-    const screenToWorld = (point: Vec2): Vec2 => ({
-      x: (point.x - translation.x) / scale,
-      y: (point.y - translation.y) / scale,
-    })
-
-    const worldToScreen = (point: Vec2): Vec2 => ({
-      x: point.x * scale + translation.x,
-      y: point.y * scale + translation.y,
-    })
 
     const setScaleAroundPoint = (nextScale: number, pivot?: Vec2) => {
       const clamped = clampScale(nextScale)
