@@ -19,6 +19,11 @@ export default defineConfig({
         changeOrigin: true,
         rewrite: (path) => path.replace(/^\/api/, ''),
       },
+      '/collab': {
+        target: API_PROXY_TARGET,
+        changeOrigin: true,
+        ws: true,
+      },
     },
   },
 })

@@ -96,6 +96,21 @@ export interface Viewport {
   height: number
 }
 
+export interface RemoteCursor {
+  id: string
+  x: number
+  y: number
+  color: string
+  label: string
+  selectedIds?: string[]
+}
+
+export interface RemoteSelection {
+  nodeId: string
+  color: string
+  label: string
+}
+
 export interface SceneDocumentV1 {
   version: 1
   nodes: SceneNode[]
@@ -302,6 +317,11 @@ export interface SceneState {
   endMarquee: () => void
   loadSceneDocument: (document: SceneDocument | null | undefined) => void
   toSceneDocument: () => SceneDocument
+  remoteCursors: RemoteCursor[]
+  setRemoteCursors: (cursors: RemoteCursor[]) => void
+  remoteSelections: RemoteSelection[]
+  remoteLockIds: string[]
+  setRemoteSelections: (selections: RemoteSelection[], lockedIds: string[]) => void
 }
 
 const unique = (values: string[]) => {
@@ -355,9 +375,9 @@ export const getWorldScenePosition = (world: WorldTransform): Vec2 => ({
   y: world.position.y,
 })
 
-const clampSelectionToNodes = (ids: string[], nodes: SceneNode[]) => {
+const clampSelectionToNodes = (ids: string[], nodes: SceneNode[], remoteLocked: Set<string>) => {
   const existing = new Set(nodes.map((node) => node.id))
-  return unique(ids.filter((id) => existing.has(id)))
+  return unique(ids.filter((id) => existing.has(id) && !remoteLocked.has(id)))
 }
 
 const cloneShapeDefinition = (shape: ShapeDefinition): ShapeDefinition =>
@@ -516,6 +536,7 @@ export const useSceneStore = create<SceneState>((set, get) => ({
     future: [],
     recording: false,
   },
+  remoteCursors: [],
   viewOnly: false,
   showGrid: true,
   showOrigin: true,
@@ -525,6 +546,8 @@ export const useSceneStore = create<SceneState>((set, get) => ({
     start: null,
     end: null,
   },
+  remoteSelections: [],
+  remoteLockIds: [],
 createRectangleNode: (overrides = {}) => {
     const state = get()
     const center = overrides.position ?? state.getWorldCenter()
@@ -705,6 +728,8 @@ createRectangleNode: (overrides = {}) => {
     if (ids.length === 0) return
     set((prev) => {
       if (prev.viewOnly) return prev
+      const remoteLocked = new Set(prev.remoteLockIds)
+      if (ids.some((id) => remoteLocked.has(id))) return prev
       const toDelete = new Set(ids)
       const nodes = prev.nodes.filter((node) => !toDelete.has(node.id))
       const selectedIds = prev.selectedIds.filter((id) => !toDelete.has(id))
@@ -736,7 +761,8 @@ createRectangleNode: (overrides = {}) => {
   clearSelection: () => set({ selectedIds: [], lastSelectedId: null }),
   setSelection: (ids) =>
     set((prev) => {
-      const selectedIds = clampSelectionToNodes(ids, prev.nodes.filter((node) => !node.locked))
+      const remoteLocked = new Set(prev.remoteLockIds)
+      const selectedIds = clampSelectionToNodes(ids, prev.nodes.filter((node) => !node.locked), remoteLocked)
       return {
         selectedIds,
         lastSelectedId: selectedIds.at(-1) ?? null,
@@ -744,6 +770,7 @@ createRectangleNode: (overrides = {}) => {
     }),
   toggleSelection: (id) =>
     set((prev) => {
+      if (prev.remoteLockIds.includes(id)) return prev
       if (prev.selectedIds.includes(id)) {
         const selectedIds = prev.selectedIds.filter((selectedId) => selectedId !== id)
         return {
@@ -752,7 +779,7 @@ createRectangleNode: (overrides = {}) => {
         }
       }
 
-      const nodeExists = prev.nodes.some((node) => node.id === id && !node.locked)
+      const nodeExists = prev.nodes.some((node) => node.id === id && !node.locked && !prev.remoteLockIds.includes(node.id))
       if (!nodeExists) return {}
 
       return {
@@ -763,7 +790,7 @@ createRectangleNode: (overrides = {}) => {
   marqueeSelect: (box, additive) =>
     set((prev) => {
       const intersecting = prev.nodes
-        .filter((node) => !node.locked && intersectsAABB(box, getNodeAABB(node)))
+        .filter((node) => !node.locked && !prev.remoteLockIds.includes(node.id) && intersectsAABB(box, getNodeAABB(node)))
         .map((node) => node.id)
       if (intersecting.length === 0) {
         return additive ? {} : { selectedIds: [], lastSelectedId: null }
@@ -1324,6 +1351,26 @@ createRectangleNode: (overrides = {}) => {
     set((prev) => {
       if (prev.viewOnly === viewOnly) return prev
       return { ...prev, viewOnly }
+    }),
+  setRemoteCursors: (cursors) =>
+    set((prev) => ({
+      ...prev,
+      remoteCursors: cursors,
+    })),
+  setRemoteSelections: (selections, lockedIds) =>
+    set((prev) => {
+      const lockSet = new Set(lockedIds)
+      const filteredSelected = prev.selectedIds.filter((id) => !lockSet.has(id))
+      const lastSelectedId = filteredSelected.includes(prev.lastSelectedId ?? '')
+        ? prev.lastSelectedId
+        : filteredSelected.at(-1) ?? null
+      return {
+        ...prev,
+        remoteSelections: selections,
+        remoteLockIds: lockedIds,
+        selectedIds: filteredSelected,
+        lastSelectedId,
+      }
     }),
   startMarquee: (start) =>
     set(() => ({

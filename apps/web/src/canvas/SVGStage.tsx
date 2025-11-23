@@ -52,7 +52,6 @@ const FALLBACK_TILE_SIZE = 256
 const prefetchedTiles = new Set<string>()
 // Cull only when projected size is truly sub-pixel (~1px)
 const MIN_IMAGE_SCREEN_PX = 1
-const IMAGE_CULL_SCALE_THRESHOLD = 10000
 const LOD_UPGRADE_FACTOR = 1.2
 const LOD_DOWNGRADE_FACTOR = 0.8
 // Positive values choose higher-detail levels sooner; tweak to taste
@@ -304,6 +303,9 @@ export function SVGStage() {
     const marqueeGroup = createSvgElement('g')
     marqueeGroup.classList.add('svg-stage__marquee')
 
+    const remoteSelectionGroup = createSvgElement('g')
+    remoteSelectionGroup.classList.add('svg-stage__remote-selection')
+
     const selectionGroup = createSvgElement('g')
     selectionGroup.classList.add('svg-stage__selection')
 
@@ -318,7 +320,7 @@ export function SVGStage() {
     originCrossY.setAttribute('stroke-linecap', 'round')
     originGroup.append(originCrossX, originCrossY, originCircle)
 
-    svg.append(gridGroup, nodesGroup, marqueeGroup, selectionGroup, originGroup)
+    svg.append(gridGroup, nodesGroup, remoteSelectionGroup, marqueeGroup, selectionGroup, originGroup)
 
     const clampScale = (value: number) =>
       Math.min(VIEWPORT_CONFIG.maxZoom, Math.max(VIEWPORT_CONFIG.minZoom, Number.isFinite(value) ? value : 1))
@@ -809,6 +811,37 @@ export function SVGStage() {
       selectionGroup.appendChild(rotationCircle)
     }
 
+    const renderRemoteSelectionOverlay = (nodes: SceneNode[], highlights: { nodeId: string; color: string }[]) => {
+      clearChildren(remoteSelectionGroup)
+      if (highlights.length === 0) {
+        remoteSelectionGroup.style.display = 'none'
+        return
+      }
+      const nodeById = new Map(nodes.map((node) => [node.id, node]))
+      const safeScale = Math.max(scale, Number.EPSILON)
+      const sizing = calculateSelectionHandleSizing()
+      const strokeWidth = (sizing.strokeWidth * 0.8) / safeScale
+      highlights.forEach((highlight) => {
+        const node = nodeById.get(highlight.nodeId)
+        if (!node) return
+        const overlay = calculateGroupSelectionOverlay([node])
+        if (!overlay) return
+        const toPathPoint = (point: Vec2) => toWorld(overlay, point)
+        const cornersWorld = overlay.corners.map(toPathPoint)
+        const outlinePath = createSvgElement('path')
+        const pathData = cornersWorld
+          .map((corner, index) => `${index === 0 ? 'M' : 'L'} ${corner.x} ${corner.y}`)
+          .join(' ')
+        outlinePath.setAttribute('d', `${pathData} Z`)
+        outlinePath.setAttribute('fill', 'none')
+        outlinePath.setAttribute('stroke', highlight.color)
+        outlinePath.setAttribute('stroke-width', strokeWidth.toString())
+        outlinePath.setAttribute('stroke-dasharray', `${8 / safeScale} ${4 / safeScale}`)
+        remoteSelectionGroup.appendChild(outlinePath)
+      })
+      remoteSelectionGroup.style.display = ''
+    }
+
     const detectHandleAtPoint = (worldPoint: Vec2, overlay: SelectionOverlayGeometry): HandleHit | null => {
       const sizing = calculateSelectionHandleSizing()
       const pointerScreen = worldToScreen(worldPoint)
@@ -878,6 +911,10 @@ export function SVGStage() {
     let lastNodes = storeApi.getState().nodes
     let lastSelectedList = storeApi.getState().selectedIds
     let selectedIds = new Set(lastSelectedList)
+    let remoteSelectionList = storeApi.getState().remoteSelections
+    let remoteLockIdList = storeApi.getState().remoteLockIds
+    let remoteSelections = remoteSelectionList
+    let remoteLockIds = new Set(remoteLockIdList)
     let selectedNodesCache: SceneNode[] = []
     let marqueeState = storeApi.getState().marquee
     let currentOverlay: SelectionOverlayGeometry | null = null
@@ -914,6 +951,7 @@ export function SVGStage() {
 
     const renderScene = (nodes: SceneNode[], selection: Set<string>) => {
       renderNodes(nodes, selection)
+      renderRemoteSelectionOverlay(nodes, remoteSelections)
       selectedNodesCache = nodes.filter((node) => selection.has(node.id))
       renderOverlays()
       if (pointerState.mode === 'scale') {
@@ -1254,6 +1292,7 @@ export function SVGStage() {
       const hits: SceneNode[] = []
       for (let i = lastNodes.length - 1; i >= 0; i -= 1) {
         const node = lastNodes[i]
+        if (remoteLockIds.has(node.id)) continue
         if (isPointInsideNode(node, worldPoint)) {
           hits.push(node)
         }
@@ -1505,7 +1544,7 @@ export function SVGStage() {
       const toggle = event.metaKey || event.ctrlKey
       const additive = event.shiftKey
       const hits = pickNodesAtScreenPoint(hostPoint)
-      const topHit = hits.find((node) => !node.locked)
+      const topHit = hits.find((node) => !node.locked && !remoteLockIds.has(node.id))
       const isPrimary = event.button === 0 || event.pointerType === 'touch'
       if (topHit && isPrimary && !keyboard.spacePressed) {
         const alreadySelected = selectedIds.has(topHit.id)
@@ -1716,6 +1755,15 @@ export function SVGStage() {
       renderScene(lastNodes, selectedIds)
     })
 
+    const unsubscribeRemoteSelections = useSceneStore.subscribe((state) => {
+      if (state.remoteSelections === remoteSelectionList && state.remoteLockIds === remoteLockIdList) return
+      remoteSelectionList = state.remoteSelections
+      remoteLockIdList = state.remoteLockIds
+      remoteSelections = remoteSelectionList
+      remoteLockIds = new Set(remoteLockIdList)
+      renderRemoteSelectionOverlay(lastNodes, remoteSelections)
+    })
+
     const unsubscribeViewOnly = useSceneStore.subscribe((state) => {
       viewOnly = state.viewOnly
     })
@@ -1832,6 +1880,7 @@ export function SVGStage() {
       unsubscribeWorld()
       unsubscribeNodes()
       unsubscribeSelection()
+      unsubscribeRemoteSelections()
       unsubscribeViewOnly()
       unsubscribeMarquee()
       unsubscribeShowGrid()

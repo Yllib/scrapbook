@@ -7,9 +7,13 @@ declare module 'ws' {
   export class WebSocket extends EventEmitter {
     readyState: number
     close(code?: number, reason?: string): void
-    send(data: RawData, options?: { binary?: boolean }): void
+    send(data: RawData, cb?: (err?: Error) => void): void
+    send(data: RawData, options?: { binary?: boolean }, cb?: (err?: Error) => void): void
+    ping(): void
     on(event: 'close', cb: (code: number, reason: Buffer) => void): this
     on(event: 'message', cb: (data: RawData, isBinary: boolean) => void): this
+    on(event: 'pong', cb: () => void): this
+    on(event: 'error', cb: (err: Error) => void): this
   }
 
   export interface WebSocketServerOptions {

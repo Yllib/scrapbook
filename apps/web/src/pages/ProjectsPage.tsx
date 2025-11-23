@@ -4,7 +4,6 @@ import { listProjects, createProject, deleteProject, updateProject, type Project
 import { Pencil, Trash2, Plus, Link2, Copy, User, Send } from 'lucide-react'
 import { addCollaboratorByEmail, listCollaborators, removeCollaborator, type CollaboratorRecord } from '../api/collaborators'
 import { useSceneStore } from '../state/scene'
-import { useAuthStore } from '../state/auth'
 import { TopBar } from '../ui/TopBar'
 import { createShareLink, getShareLink, revokeShareLink } from '../api/projects'
 
@@ -39,7 +38,6 @@ export function ProjectsPage() {
   const [nameInput, setNameInput] = useState('')
   const [shareDialog, setShareDialog] = useState<ShareDialogState>({ open: false, token: null, loading: false, error: null, copying: false })
   const [shareCollabDialog, setShareCollabDialog] = useState<ShareCollaboratorDialogState>({ open: false, project: undefined, email: '', loading: false, error: null, collaborators: [] })
-  const currentUserId = useAuthStore((s) => s.user?.id)
   const navigate = useNavigate()
 
   useEffect(() => {

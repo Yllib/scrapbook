@@ -58,7 +58,10 @@ export class ProjectsService {
     const existing = await this.prisma.project.findFirst({
       where: {
         id,
-        ownerId: userId,
+        OR: [
+          { ownerId: userId },
+          { collaborators: { some: { userId } } },
+        ],
       },
     });
     if (!existing) {

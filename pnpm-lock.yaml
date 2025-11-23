@@ -62,6 +62,9 @@ importers:
       class-validator:
         specifier: 0.14.2
         version: 0.14.2
+      lib0:
+        specifier: 0.2.93
+        version: 0.2.93
       passport:
         specifier: 0.7.0
         version: 0.7.0
@@ -83,6 +86,9 @@ importers:
       ws:
         specifier: 8.18.3
         version: 8.18.3
+      y-protocols:
+        specifier: 1.0.6
+        version: 1.0.6(yjs@13.6.27)
       y-websocket:
         specifier: 3.0.0
         version: 3.0.0(yjs@13.6.27)
@@ -192,6 +198,12 @@ importers:
       workbox-build:
         specifier: 7.3.0
         version: 7.3.0(@types/babel__core@7.20.5)
+      y-websocket:
+        specifier: 3.0.0
+        version: 3.0.0(yjs@13.6.27)
+      yjs:
+        specifier: 13.6.27
+        version: 13.6.27
       zustand:
         specifier: 5.0.8
         version: 5.0.8(@types/react@19.2.2)(react@19.2.0)
@@ -1268,6 +1280,7 @@ packages:
   '@esbuild/linux-x64@0.21.5':
     resolution: {integrity: sha512-1rYdTpyv03iycF1+BhzrzQJCdOuAOtaqHTWJZCWvijKD2N5Xu0TtVC8/+1faWqcP9iBCWOmjmhoH94dH82BxPQ==}
     engines: {node: '>=12'}
+    cpu: [x64]
     os: [linux]
 
   '@esbuild/linux-x64@0.25.12':
@@ -2159,6 +2172,7 @@ packages:
 
   '@rollup/rollup-linux-x64-gnu@4.53.1':
     resolution: {integrity: sha512-E/n8x2MSjAQgjj9IixO4UeEUeqXLtiA7pyoXCFYLuXpBA/t2hnbIdxHfA7kK9BFsYAoNU4st1rHYdldl8dTqGA==}
+    cpu: [x64]
     os: [linux]
 
   '@rollup/rollup-linux-x64-musl@4.53.1':
@@ -4304,6 +4318,11 @@ packages:
 
   lib0@0.2.114:
     resolution: {integrity: sha512-gcxmNFzA4hv8UYi8j43uPlQ7CGcyMJ2KQb5kZASw6SnAKAf10hK12i2fjrS3Cl/ugZa5Ui6WwIu1/6MIXiHttQ==}
+    engines: {node: '>=16'}
+    hasBin: true
+
+  lib0@0.2.93:
+    resolution: {integrity: sha512-M5IKsiFJYulS+8Eal8f+zAqf5ckm1vffW0fFDxfgxJ+uiVopvDdd3PxJmz0GsVi3YNO7QCFSq0nAsiDmNhLj9Q==}
     engines: {node: '>=16'}
     hasBin: true
 
@@ -10980,6 +10999,10 @@ snapshots:
     dependencies:
       isomorphic.js: 0.2.5
 
+  lib0@0.2.93:
+    dependencies:
+      isomorphic.js: 0.2.5
+
   libphonenumber-js@1.12.26: {}
 
   lines-and-columns@1.2.4: {}
@@ -12541,7 +12564,7 @@ snapshots:
 
   y-protocols@1.0.6(yjs@13.6.27):
     dependencies:
-      lib0: 0.2.114
+      lib0: 0.2.93
       yjs: 13.6.27
 
   y-websocket@3.0.0(yjs@13.6.27):

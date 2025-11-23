@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(docker logs:*)"
+    ],
+    "deny": [],
+    "ask": []
+  }
+}

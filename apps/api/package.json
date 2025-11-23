@@ -43,8 +43,10 @@
     "reflect-metadata": "0.2.2",
     "rxjs": "7.8.1",
     "sharp": "0.34.5",
+    "lib0": "0.2.93",
     "ws": "8.18.3",
     "y-websocket": "3.0.0",
+    "y-protocols": "1.0.6",
     "yjs": "13.6.27"
   },
   "devDependencies": {

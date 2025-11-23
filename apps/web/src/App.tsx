@@ -11,6 +11,8 @@ import { useNavigate, useParams } from 'react-router-dom'
 import { BackToProjectsButton } from './ui/BackToProjectsButton'
 import { AssetDropZone } from './ui/AssetDropZone'
 import { ToastViewport } from './ui/ToastViewport'
+import { useCollaboration } from './hooks/useCollaboration'
+import { RemoteCursors } from './canvas/RemoteCursors'
 
 export function App() {
   const backgroundColor = useSceneStore((state) => state.backgroundColor)
@@ -18,6 +20,7 @@ export function App() {
   const { id } = useParams()
   const navigate = useNavigate()
   useProjectPersistence(id, { onLoadFailure: () => navigate('/projects', { replace: true }) })
+  useCollaboration(id)
 
   useEffect(() => {
     setViewOnly(false)
@@ -33,6 +36,7 @@ export function App() {
     <div className="app-root">
       <BackToProjectsButton />
       <SVGStage />
+      <RemoteCursors cursors={useSceneStore((s) => s.remoteCursors)} />
       <AssetDropZone />
       <SceneToolbar />
       <SceneNodeList />

@@ -6,6 +6,7 @@ import {
   GetObjectCommand,
   HeadBucketCommand,
   CreateBucketCommand,
+  type GetObjectCommandOutput,
 } from '@aws-sdk/client-s3';
 import { createWriteStream, promises as fsPromises } from 'fs';
 import { createReadStream } from 'fs';
@@ -136,7 +137,7 @@ export class StorageService {
           Key: key,
         }),
       );
-      const body = result.Body;
+      const { Body: body } = result as GetObjectCommandOutput;
       if (!body || !(body instanceof Readable)) {
         throw new Error('Received empty body from storage');
       }
