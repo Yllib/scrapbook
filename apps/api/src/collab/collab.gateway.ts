@@ -234,7 +234,7 @@ export class CollabGateway implements OnModuleInit, OnModuleDestroy {
       // Save to database
       await this.prisma.project.update({
         where: { id: projectId },
-        data: { scene },
+        data: { scene: scene as any },
       })
 
       this.logger.log(`Saved project ${projectId} to database`)
