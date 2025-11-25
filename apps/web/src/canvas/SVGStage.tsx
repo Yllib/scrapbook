@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, memo } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { ZoomBadge } from '../ui/ZoomBadge'
 import { useSceneStore, type Vec2, type SceneNode, type AABB, DEFAULT_POLYGON_POINTS, getNodeAABB } from '../state/scene'
 import { requestConfirmation } from '../state/dialog'
@@ -50,8 +50,6 @@ const MAX_TEXT_DOM_FONT_SIZE = 4096
 const XLINK_NS = 'http://www.w3.org/1999/xlink'
 const FALLBACK_TILE_SIZE = 256
 const prefetchedTiles = new Set<string>()
-const MAX_DISPLAY_SCALE = 100
-const MIN_DISPLAY_SCALE = .01
 // Cull only when projected size is truly sub-pixel (~1px)
 const MIN_IMAGE_SCREEN_PX = 1
 const LOD_UPGRADE_FACTOR = 1.2
@@ -281,7 +279,7 @@ const prefetchViewportLevel = (assetId: string, stats: ReturnType<typeof getTile
 // }
 
 
-function SVGStageComponent() {
+export function SVGStage() {
   const storeApi = useSceneStore
   const hostRef = useRef<HTMLDivElement | null>(null)
   const svgRef = useRef<SVGSVGElement | null>(null)
@@ -352,8 +350,6 @@ function SVGStageComponent() {
     host.style.userSelect = 'none'
     host.style.cursor = 'default'
     svg.style.transformOrigin = '0 0'
-    svg.style.transition = 'none' // Disable CSS transitions that fight with RAF updates
-    svg.style.willChange = 'transform' // Promote to compositor layer for GPU acceleration
     svg.setAttribute('overflow', 'visible')
 
     let gridVisible = storeApi.getState().showGrid
@@ -365,16 +361,15 @@ function SVGStageComponent() {
     const createShapeElement = (node: SceneNode): SVGElement | null => {
       if (node.type !== 'shape') return null
       const shape = node.shape ?? { kind: 'rectangle', cornerRadius: 0 }
-      // Apply position adjustment to sizes (mantissa/exponent system)
-      const width = node.size.width * positionAdjustment
-      const height = node.size.height * positionAdjustment
+      const width = node.size.width
+      const height = node.size.height
       if (!Number.isFinite(width) || !Number.isFinite(height)) {
         return null
       }
 
       const fillColor = getFillColor(node)
       const strokeColor = getStrokeColor(node)
-      const strokeWidth = (node.stroke?.width ?? 0) * positionAdjustment
+      const strokeWidth = node.stroke?.width ?? 0
 
       if (shape.kind === 'ellipse') {
         const ellipse = createSvgElement('ellipse')
@@ -442,16 +437,15 @@ function SVGStageComponent() {
       if (!assetId) {
         return null
       }
-      // Apply position adjustment to sizes (mantissa/exponent system)
-      const width = getSafeDimension(node.size.width) * positionAdjustment
-      const height = getSafeDimension(node.size.height) * positionAdjustment
+      const width = getSafeDimension(node.size.width)
+      const height = getSafeDimension(node.size.height)
 
       if (node.image.isSvg) {
         const cached = svgCache.get(assetId)
         if (!cached) {
           void ensureSvgCached(assetId, () => {
             if (disposed) return
-            renderScene(lastNodes, selectedIds, positionAdjustment)
+            renderScene(lastNodes, selectedIds)
           })
           return null
         }
@@ -529,51 +523,37 @@ function SVGStageComponent() {
       clipRect.setAttribute('height', height.toString())
       group.setAttribute('clip-path', `url(#${clipId})`)
 
-      // Calculate overlap in SVG coordinate space (use displayScale, not scale, for mantissa system)
-      const baseOverlapPx = 0.5
-      const overlapScreenPx = screenWidth < 4 && screenHeight < 4 ? 0 : baseOverlapPx
-      const overlapWorld = overlapScreenPx / Math.max(displayScale, Number.EPSILON)
-      const expandX = overlapWorld * 2
-      const expandY = overlapWorld * 2
-
-      // Use incremental positioning to avoid floating-point precision loss with microscopic world coordinates
-      let currentWorldY = -halfHeight - overlapWorld
       let topPx = 0
       let y = 0
       while (topPx < stats.levelHeight) {
         const tileHeightPx = Math.min(stats.tileSize, stats.levelHeight - topPx)
         if (tileHeightPx <= 0) break
-
-        // Calculate row height for advancing Y position
-        const normalizedRowHeight = tileHeightPx / stats.levelHeight
-        const contentScaleRowY = stats.tileSize / Math.max(1, tileHeightPx)
-        const rowWorldHeight = normalizedRowHeight * height * contentScaleRowY + expandY
-
-        let currentWorldX = -halfWidth - overlapWorld
         let leftPx = 0
         let x = 0
-        while (leftPx < stats.levelWidth) {
-          const tileWidthPx = Math.min(stats.tileSize, stats.levelWidth - leftPx)
-          if (tileWidthPx <= 0) break
-
+      while (leftPx < stats.levelWidth) {
+        const tileWidthPx = Math.min(stats.tileSize, stats.levelWidth - leftPx)
+        if (tileWidthPx <= 0) break
+          const normalizedLeft = leftPx / stats.levelWidth
+          const normalizedTop = topPx / stats.levelHeight
           // Size tiles by their actual content; compensate for padded edge tiles so content fills the intended area
           const normalizedWidth = tileWidthPx / stats.levelWidth
           const normalizedHeight = tileHeightPx / stats.levelHeight
-          const contentScaleX = stats.tileSize / Math.max(1, tileWidthPx)
-          const contentScaleY = stats.tileSize / Math.max(1, tileHeightPx)
-          const tileWorldWidth = normalizedWidth * width * contentScaleX + expandX
-          const tileWorldHeight = normalizedHeight * height * contentScaleY + expandY
-
+          // Reduce overlap when very tiny to avoid inflating apparent size
+          const baseOverlapPx = 0.5
+          const overlapScreenPx = screenWidth < 4 && screenHeight < 4 ? 0 : baseOverlapPx
+          const overlapWorld = overlapScreenPx / Math.max(scale, Number.EPSILON)
+          const expandX = overlapWorld * 2
+          const expandY = overlapWorld * 2
           const tileKey = `${assetId}:${level}:${x}:${y}`
           usedTiles.add(tileKey)
           const tileUrl = buildTileUrl(assetId, stats.level, x, y)
           const tileElement = tileCache.get(tileKey) ?? createSvgElement('image')
-
-          // Use incremental positions to maintain precision
-          tileElement.setAttribute('x', currentWorldX.toString())
-          tileElement.setAttribute('y', currentWorldY.toString())
-          tileElement.setAttribute('width', tileWorldWidth.toString())
-          tileElement.setAttribute('height', tileWorldHeight.toString())
+          const contentScaleX = stats.tileSize / Math.max(1, tileWidthPx)
+          const contentScaleY = stats.tileSize / Math.max(1, tileHeightPx)
+          tileElement.setAttribute('x', (-halfWidth + normalizedLeft * width - overlapWorld).toString())
+          tileElement.setAttribute('y', (-halfHeight + normalizedTop * height - overlapWorld).toString())
+          tileElement.setAttribute('width', (normalizedWidth * width * contentScaleX + expandX).toString())
+          tileElement.setAttribute('height', (normalizedHeight * height * contentScaleY + expandY).toString())
           tileElement.setAttribute('preserveAspectRatio', 'none')
           tileElement.setAttribute('data-tile', `${level}:${x},${y}`)
           tileElement.setAttribute('shape-rendering', 'optimizeQuality')
@@ -602,14 +582,9 @@ function SVGStageComponent() {
               prefetchTile(assetId, level + 1, parentX, parentY)
             }
           }
-
-          // Advance to next tile position, accounting for overlap
-          currentWorldX += tileWorldWidth - expandX
           leftPx += stats.tileSize
           x += 1
         }
-        // Advance to next row, accounting for overlap
-        currentWorldY += rowWorldHeight - expandY
         topPx += stats.tileSize
         y += 1
       }
@@ -625,7 +600,7 @@ function SVGStageComponent() {
       textElement.classList.add('svg-stage__text')
       textElement.setAttribute('xml:space', 'preserve')
       textElement.setAttribute('fill', getFillColor(node))
-      const strokeWidth = (node.stroke?.width ?? 0) * positionAdjustment
+      const strokeWidth = node.stroke?.width ?? 0
       if (strokeWidth > 0) {
         textElement.setAttribute('stroke', getStrokeColor(node))
         textElement.setAttribute('stroke-width', strokeWidth.toString())
@@ -633,8 +608,7 @@ function SVGStageComponent() {
         textElement.setAttribute('stroke', 'none')
       }
       textElement.setAttribute('font-family', textDef.fontFamily)
-      // Apply position adjustment to font size (mantissa/exponent system)
-      const targetFontSize = Math.max(textDef.fontSize * positionAdjustment, Number.EPSILON)
+      const targetFontSize = Math.max(textDef.fontSize, Number.EPSILON)
       const domFontSize = Math.min(
         Math.max(targetFontSize, MIN_TEXT_DOM_FONT_SIZE),
         MAX_TEXT_DOM_FONT_SIZE,
@@ -654,9 +628,8 @@ function SVGStageComponent() {
         textElement.setAttribute('text-decoration', 'underline')
       }
 
-      // Apply position adjustment to sizes for text positioning (mantissa/exponent system)
-      const safeWidth = Number.isFinite(node.size.width) ? node.size.width * positionAdjustment : 0
-      const safeHeight = Number.isFinite(node.size.height) ? node.size.height * positionAdjustment : 0
+      const safeWidth = Number.isFinite(node.size.width) ? node.size.width : 0
+      const safeHeight = Number.isFinite(node.size.height) ? node.size.height : 0
       const bounds = textDef.layoutBounds
       const minYBound = bounds?.minY ?? -safeHeight / 2
       const maxYBound = bounds?.maxY ?? safeHeight / 2
@@ -665,8 +638,7 @@ function SVGStageComponent() {
       const anchorX =
         textAnchor === 'middle' ? 0 : textAnchor === 'end' ? safeWidth / 2 : -safeWidth / 2
       const lineHeightMultiplier = Number.isFinite(textDef.lineHeight) && textDef.lineHeight > 0 ? textDef.lineHeight : 1
-      // Use adjusted targetFontSize instead of original fontSize
-      const lineAdvance = Math.max(targetFontSize * lineHeightMultiplier, targetFontSize)
+      const lineAdvance = Math.max(textDef.fontSize * lineHeightMultiplier, textDef.fontSize)
       const positionScale = targetFontSize > 0 ? domFontSize / targetFontSize : 1
       const scaledAnchorX = anchorX * positionScale
       const scaledBaselineShift = baselineShift * positionScale
@@ -745,10 +717,7 @@ function SVGStageComponent() {
       }
       const rotation = (node.rotation * 180) / Math.PI
       const rotationValue = Number.isFinite(rotation) ? rotation : 0
-      // Viewport-relative rendering: subtract viewport center to keep SVG coordinates small
-      const adjustedX = (node.position.x - viewportCenter.x) * positionAdjustment
-      const adjustedY = (node.position.y - viewportCenter.y) * positionAdjustment
-      group.setAttribute('transform', `translate(${adjustedX} ${adjustedY}) rotate(${rotationValue})`)
+      group.setAttribute('transform', `translate(${node.position.x} ${node.position.y}) rotate(${rotationValue})`)
       body.classList.add('svg-stage__node-body')
       const hitTarget = createNodeHitElement(node, body)
       hitTarget.classList.add('svg-stage__node-hit')
@@ -773,17 +742,17 @@ function SVGStageComponent() {
       }
       selectionGroup.style.display = ''
       currentOverlay = overlay
-      const safeDisplayScale = Math.max(displayScale, Number.EPSILON)
+      const safeScale = Math.max(scale, Number.EPSILON)
       const sizing = calculateSelectionHandleSizing()
-      const strokeWidth = sizing.strokeWidth / safeDisplayScale
-      const cornerRadius = sizing.cornerRadius / safeDisplayScale
-      const edgeRadius = sizing.edgeRadius / safeDisplayScale
-      const rotationRadius = sizing.rotationRadius / safeDisplayScale
+      const strokeWidth = sizing.strokeWidth / safeScale
+      const cornerRadius = sizing.cornerRadius / safeScale
+      const edgeRadius = sizing.edgeRadius / safeScale
+      const rotationRadius = sizing.rotationRadius / safeScale
       const toPathPoint = (point: Vec2) => toWorld(overlay, point)
       const cornersWorld = overlay.corners.map(toPathPoint)
       const outlinePath = createSvgElement('path')
       const pathData = cornersWorld
-        .map((corner, index) => `${index === 0 ? 'M' : 'L'} ${(corner.x - viewportCenter.x) * positionAdjustment} ${(corner.y - viewportCenter.y) * positionAdjustment}`)
+        .map((corner, index) => `${index === 0 ? 'M' : 'L'} ${corner.x} ${corner.y}`)
         .join(' ')
       outlinePath.setAttribute('d', `${pathData} Z`)
       outlinePath.setAttribute('fill', 'none')
@@ -794,8 +763,8 @@ function SVGStageComponent() {
       overlay.corners.forEach((corner) => {
         const worldCorner = toPathPoint(corner)
         const circle = createSvgElement('circle')
-        circle.setAttribute('cx', ((worldCorner.x - viewportCenter.x) * positionAdjustment).toString())
-        circle.setAttribute('cy', ((worldCorner.y - viewportCenter.y) * positionAdjustment).toString())
+        circle.setAttribute('cx', worldCorner.x.toString())
+        circle.setAttribute('cy', worldCorner.y.toString())
         circle.setAttribute('r', cornerRadius.toString())
         circle.setAttribute('fill', SELECTION_CORNER_COLOR)
         selectionGroup.appendChild(circle)
@@ -804,8 +773,8 @@ function SVGStageComponent() {
       overlay.edges.forEach((edge) => {
         const worldEdge = toPathPoint(edge)
         const circle = createSvgElement('circle')
-        circle.setAttribute('cx', ((worldEdge.x - viewportCenter.x) * positionAdjustment).toString())
-        circle.setAttribute('cy', ((worldEdge.y - viewportCenter.y) * positionAdjustment).toString())
+        circle.setAttribute('cx', worldEdge.x.toString())
+        circle.setAttribute('cy', worldEdge.y.toString())
         circle.setAttribute('r', edgeRadius.toString())
         circle.setAttribute('fill', SELECTION_EDGE_COLOR)
         selectionGroup.appendChild(circle)
@@ -813,21 +782,21 @@ function SVGStageComponent() {
 
       // Keep rotation handle offset roughly 40 screen px regardless of zoom
       const desiredRotationOffsetPx = 40
-      const offsetWorld = desiredRotationOffsetPx / safeDisplayScale
+      const offsetWorld = desiredRotationOffsetPx / safeScale
       const rotationArmStart = toPathPoint({ x: 0, y: -overlay.height / 2 })
       const rotationHandleWorld = toPathPoint({ x: 0, y: -overlay.height / 2 - offsetWorld })
       const rotationArm = createSvgElement('line')
-      rotationArm.setAttribute('x1', ((rotationArmStart.x - viewportCenter.x) * positionAdjustment).toString())
-      rotationArm.setAttribute('y1', ((rotationArmStart.y - viewportCenter.y) * positionAdjustment).toString())
-      rotationArm.setAttribute('x2', ((rotationHandleWorld.x - viewportCenter.x) * positionAdjustment).toString())
-      rotationArm.setAttribute('y2', ((rotationHandleWorld.y - viewportCenter.y) * positionAdjustment).toString())
+      rotationArm.setAttribute('x1', rotationArmStart.x.toString())
+      rotationArm.setAttribute('y1', rotationArmStart.y.toString())
+      rotationArm.setAttribute('x2', rotationHandleWorld.x.toString())
+      rotationArm.setAttribute('y2', rotationHandleWorld.y.toString())
       rotationArm.setAttribute('stroke', SELECTION_ROTATION_COLOR)
       rotationArm.setAttribute('stroke-width', strokeWidth.toString())
       selectionGroup.appendChild(rotationArm)
 
       const rotationCircle = createSvgElement('circle')
-      rotationCircle.setAttribute('cx', ((rotationHandleWorld.x - viewportCenter.x) * positionAdjustment).toString())
-      rotationCircle.setAttribute('cy', ((rotationHandleWorld.y - viewportCenter.y) * positionAdjustment).toString())
+      rotationCircle.setAttribute('cx', rotationHandleWorld.x.toString())
+      rotationCircle.setAttribute('cy', rotationHandleWorld.y.toString())
       rotationCircle.setAttribute('r', rotationRadius.toString())
       rotationCircle.setAttribute('fill', SELECTION_ROTATION_COLOR)
       selectionGroup.appendChild(rotationCircle)
@@ -840,9 +809,9 @@ function SVGStageComponent() {
         return
       }
       const nodeById = new Map(nodes.map((node) => [node.id, node]))
-      const safeDisplayScale = Math.max(displayScale, Number.EPSILON)
+      const safeScale = Math.max(scale, Number.EPSILON)
       const sizing = calculateSelectionHandleSizing()
-      const strokeWidth = (sizing.strokeWidth * 1.2) / safeDisplayScale
+      const strokeWidth = (sizing.strokeWidth * 1.2) / safeScale
       highlights.forEach((highlight) => {
         const node = nodeById.get(highlight.nodeId)
         if (!node) return
@@ -852,13 +821,13 @@ function SVGStageComponent() {
         const cornersWorld = overlay.corners.map(toPathPoint)
         const outlinePath = createSvgElement('path')
         const pathData = cornersWorld
-          .map((corner, index) => `${index === 0 ? 'M' : 'L'} ${(corner.x - viewportCenter.x) * positionAdjustment} ${(corner.y - viewportCenter.y) * positionAdjustment}`)
+          .map((corner, index) => `${index === 0 ? 'M' : 'L'} ${corner.x} ${corner.y}`)
           .join(' ')
         outlinePath.setAttribute('d', `${pathData} Z`)
         outlinePath.setAttribute('fill', 'none')
         outlinePath.setAttribute('stroke', highlight.color)
         outlinePath.setAttribute('stroke-width', strokeWidth.toString())
-        outlinePath.setAttribute('stroke-dasharray', `${8 / safeDisplayScale} ${4 / safeDisplayScale}`)
+        outlinePath.setAttribute('stroke-dasharray', `${8 / safeScale} ${4 / safeScale}`)
         remoteSelectionGroup.appendChild(outlinePath)
       })
       remoteSelectionGroup.style.display = ''
@@ -913,28 +882,23 @@ function SVGStageComponent() {
       const minY = Math.min(start.y, end.y)
       const width = Math.max(Math.abs(end.x - start.x), Number.EPSILON)
       const height = Math.max(Math.abs(end.y - start.y), Number.EPSILON)
-      const safeDisplayScale = Math.max(displayScale, Number.EPSILON)
+      const safeScale = Math.max(scale, Number.EPSILON)
       const rect = createSvgElement('rect')
-      // Viewport-relative rendering: subtract viewport center from position (not size)
-      rect.setAttribute('x', ((minX - viewportCenter.x) * positionAdjustment).toString())
-      rect.setAttribute('y', ((minY - viewportCenter.y) * positionAdjustment).toString())
-      rect.setAttribute('width', (width * positionAdjustment).toString())
-      rect.setAttribute('height', (height * positionAdjustment).toString())
+      rect.setAttribute('x', minX.toString())
+      rect.setAttribute('y', minY.toString())
+      rect.setAttribute('width', width.toString())
+      rect.setAttribute('height', height.toString())
       rect.setAttribute('fill', MARQUEE_FILL_COLOR)
       rect.setAttribute('fill-opacity', MARQUEE_FILL_OPACITY.toString())
       rect.setAttribute('stroke', MARQUEE_STROKE_COLOR)
-      rect.setAttribute('stroke-width', (1 / safeDisplayScale).toString())
-      rect.setAttribute('stroke-dasharray', `${6 / safeDisplayScale} ${4 / safeDisplayScale}`)
+      rect.setAttribute('stroke-width', (1 / safeScale).toString())
+      rect.setAttribute('stroke-dasharray', `${6 / safeScale} ${4 / safeScale}`)
       marqueeGroup.appendChild(rect)
     }
 
     const initialWorld = storeApi.getState().world
     let translation: Vec2 = { ...initialWorld.position }
     let scale = clampScale(initialWorld.scale || 1)
-    // CRITICAL: Declare displayScale and positionAdjustment here so coordinate conversion functions can access them
-    let displayScale = Math.max(MIN_DISPLAY_SCALE, Math.min(scale, MAX_DISPLAY_SCALE))
-    let positionAdjustment = scale / displayScale
-    let viewportCenter: Vec2 = { x: 0, y: 0 } // World-space center of viewport for relative rendering
     let lastNodes = storeApi.getState().nodes
     let lastSelectedList = storeApi.getState().selectedIds
     let selectedIds = new Set(lastSelectedList)
@@ -946,8 +910,6 @@ function SVGStageComponent() {
     let marqueeState = storeApi.getState().marquee
     let currentOverlay: SelectionOverlayGeometry | null = null
     let lastRenderedScale = scale
-    let lastRenderedDisplayScale = displayScale
-    let lastRenderedAdjustment = positionAdjustment
     let viewOnly = storeApi.getState().viewOnly
 
     type PointerMode = 'idle' | 'pan' | 'marquee' | 'translate' | 'scale' | 'rotate' | 'touch'
@@ -1025,12 +987,8 @@ function SVGStageComponent() {
         y: node.position.y + (c.x * sin + c.y * cos),
       }))
 
-      // Convert to rendered screen space using displayScale
-      // (not worldToScreen, which uses logical scale for pointer events)
-      const screenCorners = worldCorners.map((point) => ({
-        x: (point.x * positionAdjustment) * displayScale + translation.x,
-        y: (point.y * positionAdjustment) * displayScale + translation.y,
-      }))
+      // Convert to screen space
+      const screenCorners = worldCorners.map(worldToScreen)
 
       return {
         minX: Math.min(...screenCorners.map((c) => c.x)),
@@ -1050,17 +1008,9 @@ function SVGStageComponent() {
         maxY: Math.min(nodeAABB.maxY, viewportBounds.maxY),
       }
 
-      // Adjust coordinates when scale is capped
-      const adjustedAABB = {
-        minX: visibleAABB.minX * positionAdjustment,
-        minY: visibleAABB.minY * positionAdjustment,
-        maxX: visibleAABB.maxX * positionAdjustment,
-        maxY: visibleAABB.maxY * positionAdjustment,
-      }
-
       // Validate that we have a non-degenerate intersection
-      const width = adjustedAABB.maxX - adjustedAABB.minX
-      const height = adjustedAABB.maxY - adjustedAABB.minY
+      const width = visibleAABB.maxX - visibleAABB.minX
+      const height = visibleAABB.maxY - visibleAABB.minY
 
       if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) {
         // No valid intersection to render
@@ -1068,7 +1018,7 @@ function SVGStageComponent() {
       }
 
       // Validate all position values are finite
-      if (!Number.isFinite(adjustedAABB.minX) || !Number.isFinite(adjustedAABB.minY)) {
+      if (!Number.isFinite(visibleAABB.minX) || !Number.isFinite(visibleAABB.minY)) {
         return null
       }
 
@@ -1078,8 +1028,8 @@ function SVGStageComponent() {
 
       // Create semi-transparent fill to show node extent
       const fillRect = createSvgElement('rect')
-      fillRect.setAttribute('x', adjustedAABB.minX.toString())
-      fillRect.setAttribute('y', adjustedAABB.minY.toString())
+      fillRect.setAttribute('x', visibleAABB.minX.toString())
+      fillRect.setAttribute('y', visibleAABB.minY.toString())
       fillRect.setAttribute('width', width.toString())
       fillRect.setAttribute('height', height.toString())
       fillRect.setAttribute('fill', node.fill || DEFAULT_SHAPE_FILL)
@@ -1087,14 +1037,14 @@ function SVGStageComponent() {
 
       // Create border outline
       const borderRect = createSvgElement('rect')
-      borderRect.setAttribute('x', adjustedAABB.minX.toString())
-      borderRect.setAttribute('y', adjustedAABB.minY.toString())
+      borderRect.setAttribute('x', visibleAABB.minX.toString())
+      borderRect.setAttribute('y', visibleAABB.minY.toString())
       borderRect.setAttribute('width', width.toString())
       borderRect.setAttribute('height', height.toString())
       borderRect.setAttribute('fill', 'none')
       borderRect.setAttribute('stroke', node.stroke?.color || DEFAULT_SHAPE_STROKE)
 
-      const safeScale = Math.max(displayScale, Number.EPSILON)
+      const safeScale = Math.max(scale, Number.EPSILON)
       const strokeWidth = Math.max(1 / safeScale, (node.stroke?.width || 2) / safeScale)
       borderRect.setAttribute('stroke-width', strokeWidth.toString())
 
@@ -1109,31 +1059,16 @@ function SVGStageComponent() {
       const viewportBounds = getViewportBounds()
       const CULL_PADDING = 100 // Extra margin in world units
 
-      // Apply position adjustment to viewport bounds and padding for precision at extreme zooms
-      const adjustedViewportBounds = {
-        minX: viewportBounds.minX * positionAdjustment,
-        minY: viewportBounds.minY * positionAdjustment,
-        maxX: viewportBounds.maxX * positionAdjustment,
-        maxY: viewportBounds.maxY * positionAdjustment,
-      }
-      const adjustedPadding = CULL_PADDING * positionAdjustment
-
       nodes.forEach((node) => {
-        // Calculate node's world AABB and apply position adjustment
+        // Calculate node's world AABB
         const nodeAABB = getNodeAABB(node)
-        const adjustedNodeAABB = {
-          minX: nodeAABB.minX * positionAdjustment,
-          minY: nodeAABB.minY * positionAdjustment,
-          maxX: nodeAABB.maxX * positionAdjustment,
-          maxY: nodeAABB.maxY * positionAdjustment,
-        }
 
-        // Check if completely off-screen (with padding) in adjusted coordinate space
+        // Check if completely off-screen (with padding)
         if (
-          adjustedNodeAABB.maxX < adjustedViewportBounds.minX - adjustedPadding ||
-          adjustedNodeAABB.minX > adjustedViewportBounds.maxX + adjustedPadding ||
-          adjustedNodeAABB.maxY < adjustedViewportBounds.minY - adjustedPadding ||
-          adjustedNodeAABB.minY > adjustedViewportBounds.maxY + adjustedPadding
+          nodeAABB.maxX < viewportBounds.minX - CULL_PADDING ||
+          nodeAABB.minX > viewportBounds.maxX + CULL_PADDING ||
+          nodeAABB.maxY < viewportBounds.minY - CULL_PADDING ||
+          nodeAABB.minY > viewportBounds.maxY + CULL_PADDING
         ) {
           return // Skip rendering - 100% off-screen
         }
@@ -1180,7 +1115,7 @@ function SVGStageComponent() {
       }
     }
 
-    const renderScene = (nodes: SceneNode[], selection: Set<string>, currentAdjustment?: number) => {
+    const renderScene = (nodes: SceneNode[], selection: Set<string>) => {
       renderNodes(nodes, selection)
       renderRemoteSelectionOverlay(nodes, remoteSelections)
       selectedNodesCache = nodes.filter((node) => selection.has(node.id))
@@ -1188,12 +1123,7 @@ function SVGStageComponent() {
       if (pointerState.mode === 'scale') {
         pointerState.transformOverlay = currentOverlay
       }
-      // CRITICAL: Update tracking variables so they stay in sync regardless of where renderScene is called from
       lastRenderedScale = scale
-      lastRenderedDisplayScale = displayScale
-      if (currentAdjustment !== undefined) {
-        lastRenderedAdjustment = currentAdjustment
-      }
     }
 
     renderScene(lastNodes, selectedIds)
@@ -1210,18 +1140,14 @@ function SVGStageComponent() {
       gridGroup.style.display = ''
       const { width, height } = getViewportSize()
       if (width <= 0 || height <= 0) return
-      // Use screenToWorld to handle mantissa/exponent coordinate system
-      const topLeft = screenToWorld({ x: 0, y: 0 })
-      const bottomRight = screenToWorld({ x: width, y: height })
-      const worldWidth = bottomRight.x - topLeft.x
-      const worldHeight = bottomRight.y - topLeft.y
-      const padX = worldWidth
-      const padY = worldHeight
-      const rawMinX = topLeft.x - padX
-      const rawMaxX = bottomRight.x + padX
-      const rawMinY = topLeft.y - padY
-      const rawMaxY = bottomRight.y + padY
-      const worldPerPixel = worldWidth / width
+      const safeScale = Math.max(scale, Number.EPSILON)
+      const padX = (width / safeScale) * 2
+      const padY = (height / safeScale) * 2
+      const rawMinX = (0 - translation.x) / safeScale - padX
+      const rawMaxX = (width - translation.x) / safeScale + padX
+      const rawMinY = (0 - translation.y) / safeScale - padY
+      const rawMaxY = (height - translation.y) / safeScale + padY
+      const worldPerPixel = 1 / safeScale
       let spacing = Number.isFinite(GRID_MAJOR_BASE) && GRID_MAJOR_BASE > 0 ? GRID_MAJOR_BASE : 64
       const adjustForMaxLines = () => {
         const rangeX = rawMaxX - rawMinX
@@ -1244,12 +1170,12 @@ function SVGStageComponent() {
       normalizeSpacing()
       adjustForMaxLines()
 
-      if (!force && Math.abs(scale - lastGridScale) < 1e-3 && Math.abs(spacing - lastGridSpacing) < 1e-3) {
+      if (!force && Math.abs(safeScale - lastGridScale) < 1e-3 && Math.abs(spacing - lastGridSpacing) < 1e-3) {
         return
       }
 
       clearChildren(gridGroup)
-      lastGridScale = scale
+      lastGridScale = safeScale
       lastGridSpacing = spacing
       const spacingPx = spacing / worldPerPixel
       const minX = Math.floor(rawMinX / spacing) * spacing
@@ -1259,14 +1185,12 @@ function SVGStageComponent() {
 
       const appendLine = (x1: number, y1: number, x2: number, y2: number, color: string, widthPx: number, alpha: number) => {
         const line = createSvgElement('line')
-        // Viewport-relative rendering: subtract viewport center to keep SVG coordinates small
-        line.setAttribute('x1', ((x1 - viewportCenter.x) * positionAdjustment).toString())
-        line.setAttribute('y1', ((y1 - viewportCenter.y) * positionAdjustment).toString())
-        line.setAttribute('x2', ((x2 - viewportCenter.x) * positionAdjustment).toString())
-        line.setAttribute('y2', ((y2 - viewportCenter.y) * positionAdjustment).toString())
+        line.setAttribute('x1', x1.toString())
+        line.setAttribute('y1', y1.toString())
+        line.setAttribute('x2', x2.toString())
+        line.setAttribute('y2', y2.toString())
         line.setAttribute('stroke', color)
-        const safeDisplayScale = Math.max(displayScale, Number.EPSILON)
-        line.setAttribute('stroke-width', (widthPx / safeDisplayScale).toString())
+        line.setAttribute('stroke-width', (widthPx / safeScale).toString())
         line.setAttribute('stroke-opacity', alpha.toString())
         line.setAttribute('shape-rendering', 'crispEdges')
         gridGroup.appendChild(line)
@@ -1318,15 +1242,11 @@ function SVGStageComponent() {
         return
       }
       originGroup.style.display = ''
-      // Viewport-relative rendering: position origin marker relative to viewport center
-      const originX = (0 - viewportCenter.x) * positionAdjustment
-      const originY = (0 - viewportCenter.y) * positionAdjustment
-      originGroup.setAttribute('transform', `translate(${originX} ${originY})`)
-      const safeDisplayScale = Math.max(displayScale, Number.EPSILON)
-      const radius = ORIGIN_DOT_RADIUS / safeDisplayScale
-      const crossLength = ORIGIN_ARM_LENGTH / safeDisplayScale
-      const ringWidth = ORIGIN_RING_WIDTH / safeDisplayScale
-      const crossWidth = ORIGIN_CROSS_WIDTH / safeDisplayScale
+      const safeScale = Math.max(scale, Number.EPSILON)
+      const radius = ORIGIN_DOT_RADIUS / safeScale
+      const crossLength = ORIGIN_ARM_LENGTH / safeScale
+      const ringWidth = ORIGIN_RING_WIDTH / safeScale
+      const crossWidth = ORIGIN_CROSS_WIDTH / safeScale
       originCircle.setAttribute('r', radius.toString())
       originCircle.setAttribute('fill', ORIGIN_FILL_COLOR)
       originCircle.setAttribute('stroke', ORIGIN_RING_COLOR)
@@ -1361,46 +1281,11 @@ function SVGStageComponent() {
     const applyTransform = () => {
       const run = () => {
         pendingFrame = 0
-        // Calculate display scale and position adjustment
-        const prevAdjustment = positionAdjustment
-        displayScale = Math.max(MIN_DISPLAY_SCALE, Math.min(scale, MAX_DISPLAY_SCALE))
-        positionAdjustment = scale / displayScale
-
-        // Calculate viewport center in world space for viewport-relative rendering
-        const { width: vpWidth, height: vpHeight } = getViewportSize()
-        viewportCenter = screenToWorld({ x: vpWidth / 2, y: vpHeight / 2 })
-
-        // CRITICAL: Sync scale to store IMMEDIATELY before any other operations
-        // Collaboration code needs current scale for screenToWorld calculations
-        if (!syncingWorld) {
-          syncingWorld = true
-          try {
-            storeApi.getState().updateWorldTransform({ position: { ...translation }, scale })
-          } finally {
-            syncingWorld = false
-          }
-        }
-
-        // Viewport-relative rendering: center SVG origin at viewport center
-        // This keeps SVG coordinates small regardless of world position
-        svg.style.transform = `translate3d(${vpWidth / 2}px, ${vpHeight / 2}px, 0) scale(${displayScale})`
-
-        // CRITICAL: Track whether we're in mantissa mode (scale is capped)
-        // Use <= and >= to include the boundary values themselves
-        const wasInMantissaMode = lastRenderedScale >= MAX_DISPLAY_SCALE || lastRenderedScale <= MIN_DISPLAY_SCALE
-        const nowInMantissaMode = scale >= MAX_DISPLAY_SCALE || scale <= MIN_DISPLAY_SCALE
-        const crossedMantissaBoundary = wasInMantissaMode !== nowInMantissaMode
-
+        svg.style.transform = `translate(${translation.x}px, ${translation.y}px) scale(${scale})`
         renderGuides()
         renderOverlays()
-        // Re-render nodes if displayScale changed (affects SVG transform) or adjustment changed (affects node positions)
-        // Also re-render during panning because viewportCenter changes, affecting node positions in SVG space
-        const displayScaleChanged = Math.abs(displayScale - lastRenderedDisplayScale) > 1e-6
-        const adjustmentChanged = Math.abs(positionAdjustment - lastRenderedAdjustment) > 1e-6
-
-        if (displayScaleChanged || adjustmentChanged || crossedMantissaBoundary || isPanning) {
-          renderScene(lastNodes, selectedIds, positionAdjustment)
-          // Note: renderScene updates all tracking variables
+        if (Math.abs(scale - lastRenderedScale) > 1e-4) {
+          renderScene(lastNodes, selectedIds)
         }
       }
       if (pendingFrame) return
@@ -1411,8 +1296,6 @@ function SVGStageComponent() {
 
     let syncingWorld = false
     let pendingWorldFrame = 0
-    let isPanning = false // Flag to prevent store sync during pan
-
     const syncWorldState = () => {
       if (pendingWorldFrame) return
       pendingWorldFrame = requestAnimationFrame(() => {
@@ -1445,8 +1328,6 @@ function SVGStageComponent() {
       const pivotPoint = pivot ?? { x: hostBounds.width / 2, y: hostBounds.height / 2 }
       const worldPoint = screenToWorld(pivotPoint)
       scale = clamped
-      // Direct calculation: translation = pivot - world × scale
-      // This works with mantissa/exponent because: screen = world × scale + translation
       translation = {
         x: pivotPoint.x - worldPoint.x * scale,
         y: pivotPoint.y - worldPoint.y * scale,
@@ -1458,7 +1339,7 @@ function SVGStageComponent() {
     const translateBy = (delta: Vec2) => {
       translation = { x: translation.x + delta.x, y: translation.y + delta.y }
       applyTransform()
-      // Don't sync to store during pan - wait until pan ends for better performance
+      syncWorldState()
     }
 
     const keyboard = {
@@ -1591,7 +1472,6 @@ function SVGStageComponent() {
 
     const startPan = (event: PointerEvent) => {
       event.preventDefault()
-      isPanning = true
       pointerState.active = true
       pointerState.mode = 'pan'
       pointerState.pointerId = event.pointerId
@@ -1757,7 +1637,6 @@ function SVGStageComponent() {
       const scaleRatio = distance / pinchState.startDistance
       const nextScale = clampScale(pinchState.startScale * (Number.isFinite(scaleRatio) ? scaleRatio : 1))
       scale = nextScale
-      // Direct calculation: translation = pivot - world × scale
       translation = {
         x: center.x - pinchState.centerWorld.x * scale,
         y: center.y - pinchState.centerWorld.y * scale,
@@ -1959,11 +1838,6 @@ function SVGStageComponent() {
       if (pointerState.mode === 'translate' || pointerState.mode === 'scale' || pointerState.mode === 'rotate') {
         finishTransformSession()
       }
-      // If we were panning, sync world state once now that pan is complete
-      if (pointerState.mode === 'pan') {
-        isPanning = false
-        syncWorldState()
-      }
       pointerState.mode = 'idle'
       pointerState.active = false
       pointerState.pointerId = -1
@@ -1987,11 +1861,6 @@ function SVGStageComponent() {
       }
       if (pointerState.mode === 'translate' || pointerState.mode === 'scale' || pointerState.mode === 'rotate') {
         finishTransformSession()
-      }
-      // If we were panning, sync world state once now that pan is cancelled
-      if (pointerState.mode === 'pan') {
-        isPanning = false
-        syncWorldState()
       }
       pointerState.mode = 'idle'
       pointerState.active = false
@@ -2017,8 +1886,7 @@ function SVGStageComponent() {
     }
 
     const unsubscribeWorld = useSceneStore.subscribe((state) => {
-      // Don't process world updates if we're actively syncing, have a pending sync, OR are panning
-      if (syncingWorld || pendingWorldFrame || isPanning) return
+      if (syncingWorld) return
       const nextScale = clampScale(state.world.scale)
       const nextPosition = state.world.position
       const scaleChanged = Math.abs(nextScale - scale) > 1e-9
@@ -2033,14 +1901,14 @@ function SVGStageComponent() {
     const unsubscribeNodes = useSceneStore.subscribe((state) => {
       if (state.nodes === lastNodes) return
       lastNodes = state.nodes
-      renderScene(lastNodes, selectedIds, positionAdjustment)
+      renderScene(lastNodes, selectedIds)
     })
 
     const unsubscribeSelection = useSceneStore.subscribe((state) => {
       if (state.selectedIds === lastSelectedList) return
       lastSelectedList = state.selectedIds
       selectedIds = new Set(state.selectedIds)
-      renderScene(lastNodes, selectedIds, positionAdjustment)
+      renderScene(lastNodes, selectedIds)
     })
 
     const unsubscribeRemoteSelections = useSceneStore.subscribe((state) => {
@@ -2253,5 +2121,3 @@ function SVGStageComponent() {
     </>
   )
 }
-
-export const SVGStage = memo(SVGStageComponent)
