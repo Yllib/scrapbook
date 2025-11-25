@@ -8,12 +8,14 @@ import { getYDoc, setupWSConnection } from './ywebsocket'
 import { PrismaService } from '../prisma/prisma.service'
 
 const CLOSE_POLICY_VIOLATION = 1008
+const SAVE_DEBOUNCE_MS = 2000
 
 @Injectable()
 export class CollabGateway implements OnModuleInit, OnModuleDestroy {
   private wss?: WebSocketServer
   private readonly logger = new Logger(CollabGateway.name)
   private readonly jwtSecret: string
+  private readonly saveTimers = new Map<string, NodeJS.Timeout>()
 
   constructor(
     private readonly adapterHost: HttpAdapterHost,
@@ -69,6 +71,7 @@ export class CollabGateway implements OnModuleInit, OnModuleDestroy {
     try {
       const { projectId, userId, initialScene } = await this.authorize(req)
       this.ensureDocHydrated(projectId, initialScene, userId)
+      this.setupPersistence(projectId)
       setupWSConnection(socket as any, req, { docName: projectId, gc: false })
       this.logger.log(`collab client connected user=${userId} project=${projectId}`)
 
@@ -149,19 +152,94 @@ export class CollabGateway implements OnModuleInit, OnModuleDestroy {
       }
     }
 
-    if (state.has('scene')) {
-      const sceneObj = state.get('scene')
-      if (sceneObj && yNodes.size === 0) {
-        hydrateFromScene(sceneObj)
-      }
+    // If state has scene but yNodes is empty, they're out of sync (corrupted)
+    // Reload from database to fix corruption
+    if (state.has('scene') && yNodes.size === 0 && scene && typeof scene === 'object') {
+      const sceneObj = scene as any
+      state.set('scene', sceneObj)
+      state.set('lastWriter', userId)
+      hydrateFromScene(sceneObj)
       return
     }
 
+    // Normal case: state and yNodes are in sync, preserve collaborative edits
+    if (state.has('scene')) {
+      return
+    }
+
+    // First connection: initialize from database
     if (scene && typeof scene === 'object') {
       const sceneObj = scene as any
       state.set('scene', sceneObj)
       state.set('lastWriter', userId)
       hydrateFromScene(sceneObj)
+    }
+  }
+
+  private setupPersistence(projectId: string) {
+    const doc = getYDoc(projectId)
+    const yNodes = doc.getMap('nodes')
+    const yWorld = doc.getMap('world')
+    const state = doc.getMap('state')
+
+    // Listen for changes and schedule saves
+    const updateHandler = () => {
+      this.scheduleSave(projectId, doc)
+    }
+
+    // Remove any existing listener to avoid duplicates
+    doc.off('update', updateHandler as any)
+    doc.on('update', updateHandler as any)
+  }
+
+  private scheduleSave(projectId: string, doc: any) {
+    // Clear existing timer
+    const existingTimer = this.saveTimers.get(projectId)
+    if (existingTimer) {
+      clearTimeout(existingTimer)
+    }
+
+    // Schedule new save
+    const timer = setTimeout(() => {
+      void this.saveProjectState(projectId, doc)
+      this.saveTimers.delete(projectId)
+    }, SAVE_DEBOUNCE_MS)
+
+    this.saveTimers.set(projectId, timer)
+  }
+
+  private async saveProjectState(projectId: string, doc: any) {
+    try {
+      const yNodes = doc.getMap('nodes')
+      const yWorld = doc.getMap('world')
+      const state = doc.getMap('state')
+
+      // Extract scene from Yjs doc
+      const nodes = Array.from(yNodes.values())
+      const worldPos = yWorld.get('position') ?? { x: 0, y: 0 }
+      const worldScale = yWorld.get('scale') ?? 1
+
+      const scene = {
+        version: 1,
+        nodes,
+        world: {
+          position: worldPos,
+          scale: worldScale,
+        },
+        showGrid: state.get('showGrid') ?? true,
+        showOrigin: state.get('showOrigin') ?? true,
+        backgroundColor: state.get('backgroundColor') ?? '#020617',
+      }
+
+      // Save to database
+      await this.prisma.project.update({
+        where: { id: projectId },
+        data: { scene },
+      })
+
+      this.logger.log(`Saved project ${projectId} to database`)
+    } catch (error) {
+      this.logger.error(`Failed to save project ${projectId}`, error)
     }
   }
 }

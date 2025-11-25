@@ -601,6 +601,7 @@ export const useSceneStore = create<SceneState>((set, get) => ({
     }
 
     set((prev) => {
+      if (prev.collabStatus !== 'connected') return prev
       const history = !prev.history.recording ? pushSnapshot(prev.history, createSnapshot(prev)) : prev.history
       const nodes = [...prev.nodes, node]
       return {
@@ -668,6 +669,7 @@ export const useSceneStore = create<SceneState>((set, get) => ({
     }
 
     set((prev) => {
+      if (prev.collabStatus !== 'connected') return prev
       const history = !prev.history.recording ? pushSnapshot(prev.history, createSnapshot(prev)) : prev.history
       const nodes = [...prev.nodes, node]
       return {
@@ -717,6 +719,7 @@ export const useSceneStore = create<SceneState>((set, get) => ({
     }
 
     set((prev) => {
+      if (prev.collabStatus !== 'connected') return prev
       const history = !prev.history.recording ? pushSnapshot(prev.history, createSnapshot(prev)) : prev.history
       const nodes = [...prev.nodes, node]
       return {
@@ -733,6 +736,7 @@ export const useSceneStore = create<SceneState>((set, get) => ({
     if (ids.length === 0) return
     set((prev) => {
       if (prev.viewOnly) return prev
+      if (prev.collabStatus !== 'connected') return prev
       const remoteLocked = new Set(prev.remoteLockIds)
       if (ids.some((id) => remoteLocked.has(id))) return prev
       const toDelete = new Set(ids)
@@ -754,6 +758,7 @@ export const useSceneStore = create<SceneState>((set, get) => ({
   renameNode: (id, name) => {
     set((prev) => {
       if (prev.viewOnly) return prev
+      if (prev.collabStatus !== 'connected') return prev
       const trimmed = name.trim()
       if (!trimmed) return prev
       const hasNode = prev.nodes.some((node) => node.id === id)
@@ -825,6 +830,7 @@ export const useSceneStore = create<SceneState>((set, get) => ({
   startTransformSession: () =>
     set((prev) => {
       if (prev.viewOnly) return prev
+      if (prev.collabStatus !== 'connected') return prev
       if (prev.selectedIds.length === 0) return prev
       if (prev.history.recording) return prev
       const history = pushSnapshot(prev.history, createSnapshot(prev), true)
@@ -833,6 +839,7 @@ export const useSceneStore = create<SceneState>((set, get) => ({
   commitTransformSession: () =>
     set((prev) => {
       if (prev.viewOnly) return prev
+      if (prev.collabStatus !== 'connected') return prev
       if (!prev.history.recording) return prev
       return {
         history: {
@@ -845,6 +852,7 @@ export const useSceneStore = create<SceneState>((set, get) => ({
   translateSelected: (delta, options) =>
     set((prev) => {
       if (prev.viewOnly) return prev
+      if (prev.collabStatus !== 'connected') return prev
       if (prev.selectedIds.length === 0) return prev
       if (delta.x === 0 && delta.y === 0) return prev
       const selectedSet = new Set(prev.selectedIds)
@@ -868,6 +876,7 @@ export const useSceneStore = create<SceneState>((set, get) => ({
   scaleSelected: (center, scaleX, scaleY, options) =>
     set((prev) => {
       if (prev.viewOnly) return prev
+      if (prev.collabStatus !== 'connected') return prev
       if (prev.selectedIds.length === 0) return prev
       if (!Number.isFinite(scaleX) || !Number.isFinite(scaleY)) return prev
       const selectedSet = new Set(prev.selectedIds)
@@ -934,6 +943,7 @@ export const useSceneStore = create<SceneState>((set, get) => ({
   rotateSelected: (center, deltaRadians, options) =>
     set((prev) => {
       if (prev.viewOnly) return prev
+      if (prev.collabStatus !== 'connected') return prev
       if (prev.selectedIds.length === 0) return prev
       if (!Number.isFinite(deltaRadians) || deltaRadians === 0) return prev
       const selectedSet = new Set(prev.selectedIds)
@@ -964,6 +974,7 @@ export const useSceneStore = create<SceneState>((set, get) => ({
   updateSelectedFill: (color) =>
     set((prev) => {
       if (prev.viewOnly) return prev
+      if (prev.collabStatus !== 'connected') return prev
       if (prev.selectedIds.length === 0) return prev
       const selectedSet = new Set(prev.selectedIds)
       const nodes = prev.nodes.map((node) => {
@@ -983,6 +994,7 @@ export const useSceneStore = create<SceneState>((set, get) => ({
   updateSelectedStroke: (stroke) =>
     set((prev) => {
       if (prev.viewOnly) return prev
+      if (prev.collabStatus !== 'connected') return prev
       if (prev.selectedIds.length === 0) return prev
       const selectedSet = new Set(prev.selectedIds)
       const nodes = prev.nodes.map((node) => {
@@ -1007,6 +1019,7 @@ export const useSceneStore = create<SceneState>((set, get) => ({
   updateSelectedCornerRadius: (cornerRadius) =>
     set((prev) => {
       if (prev.viewOnly) return prev
+      if (prev.collabStatus !== 'connected') return prev
       if (prev.selectedIds.length === 0) return prev
       const radius = Math.max(0, cornerRadius)
       const selectedSet = new Set(prev.selectedIds)
@@ -1031,6 +1044,7 @@ export const useSceneStore = create<SceneState>((set, get) => ({
   setSelectedAspectRatioLocked: (locked) =>
     set((prev) => {
       if (prev.viewOnly) return prev
+      if (prev.collabStatus !== 'connected') return prev
       if (prev.selectedIds.length === 0) return prev
       const selectedSet = new Set(prev.selectedIds)
       const nodes = prev.nodes.map((node) =>
@@ -1045,6 +1059,7 @@ export const useSceneStore = create<SceneState>((set, get) => ({
   updateSelectedTextContent: (content) =>
     set((prev) => {
       if (prev.viewOnly) return prev
+      if (prev.collabStatus !== 'connected') return prev
       if (prev.selectedIds.length === 0) return prev
       const selectedSet = new Set(prev.selectedIds)
       let changed = false
@@ -1068,6 +1083,7 @@ export const useSceneStore = create<SceneState>((set, get) => ({
   setSelectedFontFamily: (fontFamily) =>
     set((prev) => {
       if (prev.viewOnly) return prev
+      if (prev.collabStatus !== 'connected') return prev
       if (!fontFamily || prev.selectedIds.length === 0) return prev
       const selectedSet = new Set(prev.selectedIds)
       let changed = false
@@ -1086,6 +1102,7 @@ export const useSceneStore = create<SceneState>((set, get) => ({
   setSelectedFontSize: (fontSize) =>
     set((prev) => {
       if (prev.viewOnly) return prev
+      if (prev.collabStatus !== 'connected') return prev
       if (!Number.isFinite(fontSize) || fontSize <= 0 || prev.selectedIds.length === 0) return prev
       const selectedSet = new Set(prev.selectedIds)
       let changed = false
@@ -1104,6 +1121,7 @@ export const useSceneStore = create<SceneState>((set, get) => ({
   setSelectedTextAlign: (align) =>
     set((prev) => {
       if (prev.viewOnly) return prev
+      if (prev.collabStatus !== 'connected') return prev
       if (!align || prev.selectedIds.length === 0) return prev
       const selectedSet = new Set(prev.selectedIds)
       let changed = false
@@ -1123,6 +1141,7 @@ export const useSceneStore = create<SceneState>((set, get) => ({
   setSelectedFontWeight: (fontWeight) =>
     set((prev) => {
       if (prev.viewOnly) return prev
+      if (prev.collabStatus !== 'connected') return prev
       if (!Number.isFinite(fontWeight) || prev.selectedIds.length === 0) return prev
       const selectedSet = new Set(prev.selectedIds)
       let changed = false
@@ -1141,6 +1160,7 @@ export const useSceneStore = create<SceneState>((set, get) => ({
   setSelectedFontStyle: (style) =>
     set((prev) => {
       if (prev.viewOnly) return prev
+      if (prev.collabStatus !== 'connected') return prev
       if (prev.selectedIds.length === 0) return prev
       const selectedSet = new Set(prev.selectedIds)
       let changed = false
@@ -1159,6 +1179,7 @@ export const useSceneStore = create<SceneState>((set, get) => ({
   setSelectedUnderline: (underline) =>
     set((prev) => {
       if (prev.viewOnly) return prev
+      if (prev.collabStatus !== 'connected') return prev
       if (prev.selectedIds.length === 0) return prev
       const selectedSet = new Set(prev.selectedIds)
       let changed = false
@@ -1175,6 +1196,7 @@ export const useSceneStore = create<SceneState>((set, get) => ({
   setSelectedLineHeight: (lineHeight) =>
     set((prev) => {
       if (prev.viewOnly) return prev
+      if (prev.collabStatus !== 'connected') return prev
       if (!Number.isFinite(lineHeight) || lineHeight <= 0 || prev.selectedIds.length === 0) return prev
       const selectedSet = new Set(prev.selectedIds)
       let changed = false
@@ -1193,6 +1215,7 @@ export const useSceneStore = create<SceneState>((set, get) => ({
   lockSelected: () =>
     set((prev) => {
       if (prev.viewOnly) return prev
+      if (prev.collabStatus !== 'connected') return prev
       if (prev.selectedIds.length === 0) return prev
       const history = !prev.history.recording ? pushSnapshot(prev.history, createSnapshot(prev)) : prev.history
       const selectedSet = new Set(prev.selectedIds)
@@ -1214,6 +1237,7 @@ export const useSceneStore = create<SceneState>((set, get) => ({
   unlockNodes: (ids) =>
     set((prev) => {
       if (prev.viewOnly) return prev
+      if (prev.collabStatus !== 'connected') return prev
       if (ids.length === 0) return prev
       const unlockSet = new Set(ids)
       const nodes = prev.nodes.map((node) =>
@@ -1233,6 +1257,7 @@ export const useSceneStore = create<SceneState>((set, get) => ({
   bringSelectedForward: () =>
     set((prev) => {
       if (prev.viewOnly) return prev
+      if (prev.collabStatus !== 'connected') return prev
       if (prev.selectedIds.length === 0) return prev
       const selectedSet = new Set(prev.selectedIds)
       const nodes = [...prev.nodes]
@@ -1250,6 +1275,7 @@ export const useSceneStore = create<SceneState>((set, get) => ({
   sendSelectedBackward: () =>
     set((prev) => {
       if (prev.viewOnly) return prev
+      if (prev.collabStatus !== 'connected') return prev
       if (prev.selectedIds.length === 0) return prev
       const selectedSet = new Set(prev.selectedIds)
       const nodes = [...prev.nodes]
@@ -1267,6 +1293,7 @@ export const useSceneStore = create<SceneState>((set, get) => ({
   bringSelectedToFront: () =>
     set((prev) => {
       if (prev.viewOnly) return prev
+      if (prev.collabStatus !== 'connected') return prev
       if (prev.selectedIds.length === 0) return prev
       const selectedSet = new Set(prev.selectedIds)
       const selectedNodes = prev.nodes.filter((node) => selectedSet.has(node.id))
@@ -1278,6 +1305,7 @@ export const useSceneStore = create<SceneState>((set, get) => ({
   sendSelectedToBack: () =>
     set((prev) => {
       if (prev.viewOnly) return prev
+      if (prev.collabStatus !== 'connected') return prev
       if (prev.selectedIds.length === 0) return prev
       const selectedSet = new Set(prev.selectedIds)
       const selectedNodes = prev.nodes.filter((node) => selectedSet.has(node.id))
@@ -1289,6 +1317,7 @@ export const useSceneStore = create<SceneState>((set, get) => ({
   undo: () =>
     set((prev) => {
       if (prev.viewOnly) return prev
+      if (prev.collabStatus !== 'connected') return prev
       if (prev.history.past.length === 0) return prev
       const snapshot = prev.history.past[prev.history.past.length - 1]
       const newPast = prev.history.past.slice(0, -1)
@@ -1312,6 +1341,7 @@ export const useSceneStore = create<SceneState>((set, get) => ({
   redo: () =>
     set((prev) => {
       if (prev.viewOnly) return prev
+      if (prev.collabStatus !== 'connected') return prev
       if (prev.history.future.length === 0) return prev
       const snapshot = prev.history.future[prev.history.future.length - 1]
       const newFuture = prev.history.future.slice(0, -1)
@@ -1335,18 +1365,21 @@ export const useSceneStore = create<SceneState>((set, get) => ({
   setShowGrid: (visible) =>
     set((prev) => {
       if (prev.viewOnly) return prev
+      if (prev.collabStatus !== 'connected') return prev
       if (prev.showGrid === visible) return prev
       return { ...prev, showGrid: visible }
     }),
   setShowOrigin: (visible) =>
     set((prev) => {
       if (prev.viewOnly) return prev
+      if (prev.collabStatus !== 'connected') return prev
       if (prev.showOrigin === visible) return prev
       return { ...prev, showOrigin: visible }
     }),
   setBackgroundColor: (color) =>
     set((prev) => {
       if (prev.viewOnly) return prev
+      if (prev.collabStatus !== 'connected') return prev
       const trimmed = color?.trim()
       if (!trimmed) return prev
       if (prev.backgroundColor === trimmed) return prev

@@ -22,38 +22,12 @@ export function useProjectPersistence(projectIdFromRoute?: string | null, option
     let cancelled = false
     const projectIdRef: { current: string | null } = { current: projectIdFromRoute ?? null }
     const initializedRef: { current: boolean } = { current: false }
-    const saveTimerRef: { current: number | null } = { current: null }
 
-    const scheduleSave = (delay = SAVE_DEBOUNCE_MS) => {
-      if (!initializedRef.current || !projectIdRef.current) {
-        return
-      }
-      if (saveTimerRef.current) {
-        window.clearTimeout(saveTimerRef.current)
-      }
-      saveTimerRef.current = window.setTimeout(async () => {
-        saveTimerRef.current = null
-        const state = useSceneStore.getState()
-        const document = state.toSceneDocument()
-        const projectId = projectIdRef.current
-        if (!projectId) {
-          return
-        }
-        await writeProjectCache(projectId, document)
-        try {
-          await updateProject(projectId, { scene: document })
-        } catch (error) {
-          console.error('Failed to save project', error)
-          scheduleSave(RETRY_DELAY_MS)
-        }
-      }, delay)
-    }
-
+    // Autosave removed - collaboration (Yjs) handles all persistence
+    // Scene changes are synced via WebSocket and saved by the server
     const unsubscribe = useSceneStore.subscribe(() => {
-      if (!initializedRef.current) {
-        return
-      }
-      scheduleSave()
+      // Subscription kept for future use (e.g., analytics, logging)
+      // No automatic saves - Yjs handles persistence
     })
 
     const finalize = async (projectId: string, sceneData: SceneDocument | null | undefined) => {
@@ -115,9 +89,6 @@ export function useProjectPersistence(projectIdFromRoute?: string | null, option
     return () => {
       cancelled = true
       unsubscribe()
-      if (saveTimerRef.current) {
-        window.clearTimeout(saveTimerRef.current)
-      }
     }
   }, [loadSceneDocument])
 }
