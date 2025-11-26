@@ -19,10 +19,13 @@ const colorFromId = (id: string) => {
 }
 
 const buildCollabUrl = () => {
-  // In development with Vite, use relative URL so the proxy can handle it
-  // In production, construct the full WebSocket URL
+  // In development with Vite, construct absolute WebSocket URL from window.location
+  // (Firefox requires absolute URLs, Chrome accepts relative URLs)
+  // In production, use configured API target or default
   if (import.meta.env.DEV) {
-    return '/collab'
+    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
+    const host = window.location.host
+    return `${protocol}//${host}/collab`
   }
   const urlBase =
     (import.meta.env.VITE_API_PROXY_TARGET as string | undefined) ??
@@ -141,6 +144,7 @@ export function useCollaboration(projectId?: string | null) {
     }
 
     let updatingRemoteCursors = false
+    let lastRemoteSelectionKeys: string[] = []
     const updateRemoteCursors = () => {
       updatingRemoteCursors = true
       try {
@@ -167,8 +171,20 @@ export function useCollaboration(projectId?: string | null) {
             selectionByNode.set(nodeId, { nodeId, color, label })
           })
         })
+
+        // Always update cursors (they change on every mouse move)
         setRemoteCursors(Array.from(cursorMap.values()))
-        setRemoteSelections(Array.from(selectionByNode.values()), Array.from(selectionByNode.keys()))
+
+        // Only update selections if they actually changed
+        const newSelectionKeys = Array.from(selectionByNode.keys()).sort()
+        const selectionsChanged =
+          newSelectionKeys.length !== lastRemoteSelectionKeys.length ||
+          newSelectionKeys.some((key, i) => key !== lastRemoteSelectionKeys[i])
+
+        if (selectionsChanged) {
+          lastRemoteSelectionKeys = newSelectionKeys
+          setRemoteSelections(Array.from(selectionByNode.values()), newSelectionKeys)
+        }
       } finally {
         updatingRemoteCursors = false
       }
@@ -245,26 +261,52 @@ export function useCollaboration(projectId?: string | null) {
 
     provider.awareness.on('update', updateRemoteCursors)
 
-    let lastPointerUpdate = 0
-    const handlePointer = (event: PointerEvent) => {
-      const now = performance.now()
-      if (now - lastPointerUpdate < 16) return
-      lastPointerUpdate = now
-      if (!provider.ws || provider.ws.readyState !== WebSocket.OPEN) return
+    // Cache stage host element and bounds to avoid expensive DOM queries on every pointermove
+    let stageHost: Element | null = null
+    let cachedBounds: DOMRect | null = null
+    let rafHandle = 0
+    let latestPointerEvent: PointerEvent | null = null
 
-      // Get canvas offset to convert viewport coords to canvas coords
-      const stageHost = document.querySelector('.stage-host')
-      if (!stageHost) return
-      const bounds = stageHost.getBoundingClientRect()
+    const updateBounds = () => {
+      stageHost = document.querySelector('.stage-host')
+      if (stageHost) {
+        cachedBounds = stageHost.getBoundingClientRect()
+      }
+    }
+
+    const processCursorUpdate = () => {
+      rafHandle = 0
+      if (!latestPointerEvent) return
+      if (!provider.ws || provider.ws.readyState !== WebSocket.OPEN) return
+      if (!stageHost || !cachedBounds) return
+
+      const event = latestPointerEvent
+      latestPointerEvent = null
+
       const canvasPoint = {
-        x: event.clientX - bounds.left,
-        y: event.clientY - bounds.top,
+        x: event.clientX - cachedBounds.left,
+        y: event.clientY - cachedBounds.top,
       }
 
       const worldPos = screenToWorld(canvasPoint, useSceneStore.getState().world)
       provider.awareness.setLocalStateField('cursor', worldPos)
     }
+
+    const handlePointer = (event: PointerEvent) => {
+      latestPointerEvent = event
+      if (rafHandle) return // Already scheduled
+      rafHandle = requestAnimationFrame(processCursorUpdate)
+    }
+
+    const handleResize = () => {
+      updateBounds()
+    }
+
+    // Initialize bounds
+    updateBounds()
+
     window.addEventListener('pointermove', handlePointer, { passive: true })
+    window.addEventListener('resize', handleResize, { passive: true })
 
     yNodes.observe(applyFromDoc)
     // Only observe shared nodes; viewport/world stays local per user
@@ -278,6 +320,10 @@ export function useCollaboration(projectId?: string | null) {
       provider.off('sync', onSync)
       provider.awareness.off('update', updateRemoteCursors)
       window.removeEventListener('pointermove', handlePointer)
+      window.removeEventListener('resize', handleResize)
+      if (rafHandle) {
+        cancelAnimationFrame(rafHandle)
+      }
       unsubscribeScene()
       unsubscribeSelectionAwareness()
       if (pushTimer) {

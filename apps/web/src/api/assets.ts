@@ -97,7 +97,7 @@ function expectedTileCount(meta: AssetMeta, tileSize = 256): number {
 
 export async function waitForAssetReady(assetId: string, options: WaitForAssetOptions = {}) {
   const interval = options.intervalMs ?? 1500
-  const timeout = options.timeoutMs ?? 60000
+  const timeout = options.timeoutMs ?? 120000 // Increased to 2 minutes for AVIF support
   const start = Date.now()
 
   // eslint-disable-next-line no-constant-condition
